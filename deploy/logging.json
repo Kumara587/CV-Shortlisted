@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "disable_existing_loggers": true,
+  "formatters": {"safe": {"format": "%(message)s"}},
+  "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "safe", "stream": "ext://sys.stdout"}},
+  "loggers": {
+    "screener.security": {"handlers": ["console"], "level": "INFO", "propagate": false},
+    "uvicorn": {"handlers": [], "level": "CRITICAL", "propagate": false},
+    "uvicorn.error": {"handlers": [], "level": "CRITICAL", "propagate": false},
+    "uvicorn.access": {"handlers": [], "level": "CRITICAL", "propagate": false}
+  },
+  "root": {"handlers": [], "level": "CRITICAL"}
+}
