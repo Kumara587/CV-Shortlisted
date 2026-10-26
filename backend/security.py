@@ -40,6 +40,10 @@ class Settings:
 
 
 def route_key(path):
+    if path=='/api/jobs': return '/api/jobs'
+    if re.fullmatch(r'/api/jobs/[A-Za-z0-9_-]+/runs',path): return '/api/jobs/:id/runs'
+    if re.fullmatch(r'/api/jobs/[A-Za-z0-9_-]+',path): return '/api/jobs/:id'
+    if re.fullmatch(r'/api/screenings/[A-Za-z0-9_-]+',path): return '/api/screenings/:id'
     if path in {'/health','/api/session','/api/requirements/extract','/api/requirements/validate','/api/resumes/parse','/api/shortlist/match','/api/shortlists','/docs','/openapi.json'}: return path
     if re.fullmatch(r'/api/shortlists/[A-Za-z0-9_-]+/export',path): return '/api/shortlists/:id/export'
     if re.fullmatch(r'/api/shortlists/[A-Za-z0-9_-]+/reviews',path): return '/api/shortlists/:id/reviews'
@@ -107,7 +111,7 @@ class SecurityMiddleware:
             limit=10 if route=='/api/resumes/parse' else 20 if route in {'/api/shortlist/match','/api/shortlists/:id/export'} else 120
             if not self.limiter.allow(('owner',owner),120) or not self.limiter.allow(('route',owner,route),limit):
                 return await reject(429,'Request rate exceeded')
-        body_limit=5*1024*1024 if route=='/api/resumes/parse' else 10*1024*1024 if route=='/api/shortlist/match' else 100*1024
+        body_limit=5*1024*1024 if route=='/api/resumes/parse' else 10*1024*1024 if route in {'/api/shortlist/match','/api/jobs','/api/jobs/:id'} else 100*1024
         lengths=[v for k,v in scope.get('headers',[]) if k.lower()==b'content-length']
         if len(lengths)>1 or (lengths and (not lengths[0].isdigit() or len(lengths[0])>10)):
             return await reject(400,'Invalid content length')

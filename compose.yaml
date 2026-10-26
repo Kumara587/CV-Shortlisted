@@ -31,6 +31,13 @@ services:
       CORS_ORIGINS: https://${APP_DOMAIN:?Set APP_DOMAIN}
       RETENTION_SECONDS: ${RETENTION_SECONDS:-3600}
       SCREENER_DATA_DIR: /data
+      SCREENER_KEY_FILE: /run/secrets/screener_storage_key
+    secrets:
+      - source: screener_storage_key
+        target: screener_storage_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     volumes:
       - screener_data:/data
     networks:
@@ -58,3 +65,6 @@ volumes:
   screener_data: {}
   caddy_data: {}
   caddy_config: {}
+secrets:
+  screener_storage_key:
+    file: ${SCREENER_KEY_FILE:?Set SCREENER_KEY_FILE to a private host key file outside the project and data volume}

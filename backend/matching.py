@@ -11,6 +11,7 @@ DEGREES = [('Diploma',r'\bdiploma\b'), ('Bachelor',r"\bbachelor(?:['’]s)?\b|\b
 ALIASES = {'node.js':['node.js','nodejs','node js'], 'rest api':['rest api','rest apis','restful api','restful apis']}
 
 def prohibited_requirement(name):
+    if re.search(r'\b(?:male|female|young|old)\s+(?:applicants?|candidates?|only)\b|\b(?:applicants?|candidates?)\s+must\s+be\s+(?:male|female)\b',name,re.I): return True
     return bool(PROTECTED.search(unicodedata.normalize('NFKC',name))) or name.casefold() in {'male','female','christian','buddhist','muslim','hindu','sinhala','tamil','white','black','asian','young','old','woman','man','women','men','sri lankan','indian','sinhalese','heterosexual','homosexual'}
 
 def segments(text):
@@ -114,7 +115,7 @@ def score_candidate(requirements, candidate, semantic_model=None):
     uncertainties=[s['name'] for s in criteria if s['status']!='supported']
     if experience['status'] not in {'meets','not_required'}: uncertainties.append('experience')
     if education['status'] not in {'meets','not_required'}: uncertainties.append('education')
-    return {'id':source,'score':score,'group':group,'skills':criteria,'experience':experience,'education':education,'components':components,'must_have_issues':must_issues,'missing_or_uncertain':uncertainties,'review_status':'pending','review_required':True,'warnings':(['No usable parsed text; no score assigned.'] if not usable else [])+(['No active requirements; no score assigned.'] if not total else [])+list(candidate.warnings),'method':VERSION}
+    return {'additional_criteria':[c.model_dump() for c in requirements.criteria],'id':source,'score':score,'group':group,'skills':criteria,'experience':experience,'education':education,'components':components,'must_have_issues':must_issues,'missing_or_uncertain':uncertainties,'review_status':'pending','review_required':True,'warnings':(['No usable parsed text; no score assigned.'] if not usable else [])+(['No active requirements; no score assigned.'] if not total else [])+list(candidate.warnings),'method':VERSION}
 
 def rank_candidates(requirements,candidates,semantic=False):
     model=None

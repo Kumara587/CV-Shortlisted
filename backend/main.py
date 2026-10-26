@@ -20,8 +20,17 @@ class Skill(StrictModel):
     name: Text
     must: bool = False
 
+class ExtractedCriterion(StrictModel):
+    id: Annotated[str,StringConstraints(min_length=1,max_length=64)]
+    text: Annotated[str,StringConstraints(strip_whitespace=True,min_length=1,max_length=1000)]
+    category: Literal['skill','education','experience','responsibility','language','other'] = 'other'
+    importance: Literal['required','preferred','review'] = 'review'
+    source_quote: str = Field(default='',max_length=1000)
+    source_line: int = Field(default=1,ge=1,le=20000)
+
 class Requirements(StrictModel):
     skills: list[Skill] = Field(default_factory=list, max_length=100)
+    criteria: list[ExtractedCriterion] = Field(default_factory=list,max_length=100)
     minimum_years: float | None = Field(default=None, ge=0, le=60, allow_inf_nan=False)
     education: Literal['', 'Diploma', 'Bachelor', 'Master', 'PhD'] = ''
 
@@ -29,6 +38,10 @@ class Requirements(StrictModel):
     def unique_skills(self):
         if any(prohibited_requirement(s.name) for s in self.skills):
             raise ValueError('Requirements must describe job qualifications, not protected or personal attributes')
+        if any(prohibited_requirement(c.text) for c in self.criteria):
+            raise ValueError('Criteria must describe job qualifications, not protected or personal attributes')
+        if len({c.id for c in self.criteria})!=len(self.criteria):
+            raise ValueError('Criterion IDs must be unique')
         names = [s.name.casefold() for s in self.skills]
         if len(names) != len(set(names)):
             raise ValueError('Skill names must be unique')
@@ -39,19 +52,14 @@ class ExtractionRequest(StrictModel):
 
 class ExtractionResponse(StrictModel):
     requirements: Requirements
-    method: Literal['deterministic_fallback'] = 'deterministic_fallback'
+    method: Literal['local_semantic_extraction','source_based_extraction']
     warnings: list[str]
 
-SKILLS = ['React', 'JavaScript', 'TypeScript', 'SQL', 'MySQL', 'REST API', 'Git', 'Excel', 'Jira', 'Communication', 'Manual Testing', 'Automation Testing', 'Selenium', 'QA', 'API Testing', 'Python', 'Java', 'Kubernetes', 'Leadership', 'Figma', 'Node.js', 'C++', 'C#', 'AWS', 'Docker', 'FastAPI']
+from extraction import extract_document
+
 
 def extract(text: str) -> Requirements:
-    skills = [Skill(name=s) for s in SKILLS if re.search(r'(?<!\w)' + re.escape(s) + r'(?!\w)', text, re.I)]
-    # Require experience context; do not interpret company age or graduation years.
-    matches = re.findall(r'(?<![\w.])(\d{1,3}(?:\.\d{1,2})?)\s*(?:[-–]\s*\d{1,3}(?:\.\d{1,2})?)?\+?\s*years?\s+(?:of\s+)?(?:(?:relevant|practical|professional|work|software|development)\s+){0,3}experience', text, re.I)
-    years = min((float(n) for n in matches if float(n) <= 60), default=None)
-    degrees = [('Diploma', r'\bdiploma\b'), ('Bachelor', r"\bbachelor(?:'s)?\b|\bb\.?sc\b|\bundergraduate\b"), ('Master', r"\bmaster(?:'s)?\b|\bm\.?sc\b"), ('PhD', r'\bph\.?d\b|\bdoctorate\b')]
-    education = next((name for name, pattern in degrees if re.search(pattern, text, re.I)), '')
-    return Requirements(skills=skills, minimum_years=years, education=education)
+    return Requirements(**extract_document(text)['requirements'])
 
 router = APIRouter()
 
@@ -61,11 +69,12 @@ async def validation_error(request, exc):
 
 @router.get('/health')
 async def health():
-    return {'status': 'ok', 'version': '0.4.0'}
+    return {'status': 'ok', 'version': '0.7.0', 'features': ['saved_jobs', 'screening_history', 'encrypted_storage', 'source_grounded_extraction']}
 
 @router.post('/api/requirements/extract', response_model=ExtractionResponse)
 async def extract_requirements(body: ExtractionRequest):
-    return ExtractionResponse(requirements=extract(body.job_description), warnings=['Rule-based extraction, not AI. Review skills, education and experience; alternatives, negations and preferences may be misinterpreted. Must-have flags require manual review.'])
+    result=await run_in_threadpool(extract_document,body.job_description,True)
+    return ExtractionResponse(**result)
 
 @router.post('/api/requirements/validate', response_model=Requirements)
 async def validate_requirements(body: Requirements):
@@ -137,6 +146,7 @@ class CandidateInput(StrictModel):
     warnings: list[Annotated[str, StringConstraints(max_length=500)]] = Field(default_factory=list, max_length=10)
 
 class MatchRequest(StrictModel):
+    job_id: Annotated[str, StringConstraints(pattern=r'^job_[A-Za-z0-9_-]+$',max_length=64)] | None = None
     requirements: Requirements
     reviewed: Literal[True]
     candidates: list[CandidateInput] = Field(min_length=1, max_length=10)
@@ -149,11 +159,24 @@ class MatchRequest(StrictModel):
 
 @router.post('/api/shortlist/match')
 async def match_shortlist(body: MatchRequest, request: Request):
+    store=request.app.state.store
+    job_workspace=None
+    if body.job_id:
+        try: job_workspace=store.job(request.state.user_id,body.job_id)['workspace']
+        except MissingSnapshot: raise HTTPException(404,'Saved job not found')
     if match_slots.locked():
         raise HTTPException(429, 'Matching is busy. Retry shortly.')
     async with match_slots:
         result=await run_in_threadpool(rank_candidates, body.requirements, body.candidates, semantic=True)
-    snapshot,expires=request.app.state.store.save(request.state.user_id,result['results'],{c.id:c.display_label or c.id for c in body.candidates})
+    if body.job_id:
+        try:
+            snapshot=store.save_run(request.state.user_id,body.job_id,body.requirements.model_dump(),
+                                    [c.model_dump() for c in body.candidates],result,job_workspace)
+        except MissingSnapshot: raise HTTPException(404,'Saved job not found')
+        except LibraryLimit: raise HTTPException(409,'Saved storage limit reached. Delete an old job or screening.')
+        expires=None
+    else:
+        snapshot,expires=store.save(request.state.user_id,result['results'],{c.id:c.display_label or c.id for c in body.candidates})
     result.update(snapshot_id=snapshot,expires_at=expires)
     return JSONResponse(result, headers={'Cache-Control':'no-store', 'Pragma':'no-cache'})
 
@@ -163,6 +186,70 @@ from fastapi.responses import Response
 from security import Settings, install_security
 from store import Store, MissingSnapshot
 from exporting import export_csv
+from library import LibraryLimit
+
+
+class JobWorkspace(StrictModel):
+    title: Annotated[str,StringConstraints(strip_whitespace=True,min_length=1,max_length=160)]
+    job_description: str = Field(default='',max_length=20000)
+    requirements: Requirements
+    candidates: list[CandidateInput] = Field(default_factory=list,max_length=10)
+
+    @model_validator(mode='after')
+    def unique_candidates(self):
+        if len({c.id for c in self.candidates}) != len(self.candidates):
+            raise ValueError('Candidate IDs must be unique')
+        return self
+
+
+@router.get('/api/jobs')
+async def list_jobs(request: Request):
+    return {'jobs':request.app.state.store.list_jobs(request.state.user_id)}
+
+
+@router.post('/api/jobs',status_code=201)
+async def create_job(body: JobWorkspace,request: Request):
+    try: return request.app.state.store.save_job(request.state.user_id,body.model_dump())
+    except LibraryLimit: raise HTTPException(409,'Saved storage limit reached. Delete an old job or screening.')
+
+
+@router.get('/api/jobs/{job_id}')
+async def get_job(job_id: str,request: Request):
+    try: return request.app.state.store.job(request.state.user_id,job_id)
+    except MissingSnapshot: raise HTTPException(404,'Saved job not found')
+
+
+@router.patch('/api/jobs/{job_id}')
+async def update_job(job_id: str,body: JobWorkspace,request: Request):
+    try: return request.app.state.store.save_job(request.state.user_id,body.model_dump(),job_id)
+    except MissingSnapshot: raise HTTPException(404,'Saved job not found')
+    except LibraryLimit: raise HTTPException(409,'Saved storage limit reached. Delete an old job or screening.')
+
+
+@router.delete('/api/jobs/{job_id}')
+async def delete_job(job_id: str,request: Request):
+    try: request.app.state.store.delete_job(request.state.user_id,job_id)
+    except MissingSnapshot: raise HTTPException(404,'Saved job not found')
+    return Response(status_code=204)
+
+
+@router.get('/api/jobs/{job_id}/runs')
+async def list_runs(job_id: str,request: Request):
+    try: return {'runs':request.app.state.store.list_runs(request.state.user_id,job_id)}
+    except MissingSnapshot: raise HTTPException(404,'Saved job not found')
+
+
+@router.get('/api/screenings/{run_id}')
+async def get_run(run_id: str,request: Request):
+    try: return request.app.state.store.run(request.state.user_id,run_id)
+    except MissingSnapshot: raise HTTPException(404,'Screening not found')
+
+
+@router.delete('/api/screenings/{run_id}')
+async def delete_run(run_id: str,request: Request):
+    try: request.app.state.store.delete_run(request.state.user_id,run_id)
+    except MissingSnapshot: raise HTTPException(404,'Screening not found')
+    return Response(status_code=204)
 
 @router.get('/api/session')
 async def session(request: Request):
@@ -222,7 +309,7 @@ async def lifecycle(api):
 def create_app(store=None,settings=None):
     settings=settings or Settings.environment()
     store=store or Store(Path(os.getenv('SCREENER_DATA_DIR',str(Path(__file__).parent/'data')))/'screener.sqlite3',settings.ttl)
-    api=FastAPI(title='Resume Screener API',version='0.4.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifecycle)
+    api=FastAPI(title='Resume Screener API',version='0.7.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifecycle)
     api.state.store=store
     api.state.settings=settings
     api.include_router(router)

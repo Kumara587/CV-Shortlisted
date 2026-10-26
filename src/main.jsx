@@ -6,7 +6,7 @@ import { UploadCloud, ChevronDown, X, FileText, Plus, Download, ShieldCheck } fr
 
 import './styles.css';
 
-import { request, parseResume, matchShortlist, signIn, clearAccessToken, saveReview, deleteShortlist, deleteAllShortlists, downloadCsv } from './api';
+import { request, parseResume, matchShortlist, signIn, clearAccessToken, saveReview, deleteShortlist, deleteAllShortlists, downloadCsv, listJobs, getJob, persistJob, removeJob, listRuns, getRun, removeRun } from './api';
 
 
 
@@ -42,6 +42,7 @@ function App() {
 
  const [files,setFiles]=useState([]), [paste,setPaste]=useState(false), [resumeText,setResumeText]=useState(''), [results,setResults]=useState([]), [blind,setBlind]=useState(false), [filter,setFilter]=useState('all'), [open,setOpen]=useState({}), [error,setError]=useState(''), [drag,setDrag]=useState(false), [busy,setBusy]=useState(false), [dirty,setDirty]=useState(false);
 
+ const [criteria,setCriteria]=useState([]);
  const [extracting,setExtracting]=useState(false), [apiNote,setApiNote]=useState('');
 
  const input=useRef(), revision=useRef(0), uploadLock=useRef(false), uploads=useRef(new Map());
@@ -49,20 +50,61 @@ function App() {
  const [uploading,setUploading]=useState(false), [reviewed,setReviewed]=useState(false), [matchNotice,setMatchNotice]=useState('');
  const [authenticated,setAuthenticated]=useState(false),[tokenDraft,setTokenDraft]=useState(''),[snapshot,setSnapshot]=useState(''),[retention,setRetention]=useState(3600),[deletionNote,setDeletionNote]=useState(''),[reviewSaving,setReviewSaving]=useState(false),[exporting,setExporting]=useState(false);
  const currentSnapshot=useRef('');
+ const [jobTitle,setJobTitle]=useState(''),[savedJobId,setSavedJobId]=useState('');
+ const [savedJobs,setSavedJobs]=useState([]),[history,setHistory]=useState([]),[libraryBusy,setLibraryBusy]=useState(false),[libraryNote,setLibraryNote]=useState('');
+ const libraryVersion=useRef(0);
+ const candidateInputs=()=>files.map(f=>({id:f.id,text:f.text,display_label:(f.person||f.name).slice(0,160),parse_status:f.unparsed?(f.status==='needs_text'?'needs_text':'error'):'parsed',warnings:f.warnings||[]}));
+ async function refreshJobs(){const version=libraryVersion.current;try{const data=await listJobs();if(version===libraryVersion.current)setSavedJobs(data.jobs);}catch(e){if(version===libraryVersion.current)setError(e.message);}}
+ function restoreWorkspace(workspace,id){
+  changed();setJob(workspace.job_description);setJobTitle(workspace.title);setSavedJobId(id);
+  setSkills(workspace.requirements.skills);setCriteria(workspace.requirements.criteria||[]);setYears(workspace.requirements.minimum_years??'');setDegree(workspace.requirements.education);
+  setFiles(workspace.candidates.map(c=>({id:c.id,name:c.display_label||c.id,text:c.text,status:c.parse_status,unparsed:c.parse_status!=='parsed',warnings:c.warnings})));
+  setResults([]);setOpen({});setSnapshot('');currentSnapshot.current='';setMatchNotice('');setApiNote('');setResumeText('');setPaste(false);setFilter('all');
+ }
+ function showResults(data,sourceFiles){
+  setResults(data.results.map(r=>{const f=sourceFiles.find(f=>f.id===r.id);const index=sourceFiles.indexOf(f);return {...f,...r,index,person:f.person||f.name,email:f.email||'',unparsed:r.score===null,matched:r.skills.filter(s=>s.status==='supported'),missing:r.skills.filter(s=>s.status!=='supported')};}));
+  setMatchNotice(data.notice);setDirty(false);setOpen({});
+ }
+ async function saveWorkspace(){
+  const data=await persistJob(savedJobId,{title:jobTitle.trim(),job_description:job,requirements:requirements(),candidates:candidateInputs()});
+  setSavedJobId(data.id);return data.id;
+ }
+ async function saveCurrent(){
+  if(!jobTitle.trim()){setError('Enter a job title before saving.');return;}
+  setLibraryBusy(true);setError('');
+  try{await saveWorkspace();await refreshJobs();setLibraryNote('Job and parsed CV text saved. They remain until you delete the job.');}catch(e){setError(e.message);}finally{setLibraryBusy(false);}
+ }
+ async function openSavedJob(id){
+  if(busy||uploading||libraryBusy)return;
+  setLibraryBusy(true);setError('');const version=libraryVersion.current;
+  try{const [data,runs]=await Promise.all([getJob(id),listRuns(id)]);if(version!==libraryVersion.current)return;restoreWorkspace(data.workspace,data.id);setHistory(runs.runs);setLibraryNote('Saved job opened. Review requirements before a new match.');}catch(e){setError(e.message);}finally{setLibraryBusy(false);}
+ }
+ async function openScreening(id){
+  setLibraryBusy(true);setError('');const version=libraryVersion.current;
+  try{const data=await getRun(id);if(version!==libraryVersion.current)return;restoreWorkspace(data.workspace,data.job_id);const sourceFiles=data.workspace.candidates.map(c=>({id:c.id,name:c.display_label||c.id,text:c.text,warnings:c.warnings}));showResults(data.result,sourceFiles);setSnapshot(data.id);currentSnapshot.current=data.id;setLibraryNote('Historical screening opened. Saved scores and reviews are restored.');}catch(e){setError(e.message);}finally{setLibraryBusy(false);}
+ }
+ async function deleteSavedJob(id){
+  setLibraryBusy(true);setError('');try{await removeJob(id);if(savedJobId===id){await clearResumes();setJob('');setJobTitle('');setSkills([]);setCriteria([]);setYears('');setDegree('');setSavedJobId('');setSnapshot('');currentSnapshot.current='';setHistory([]);}await refreshJobs();setLibraryNote('Job, its saved CV text and screening history deleted.');}catch(e){setError(e.message);}finally{setLibraryBusy(false);}
+ }
+ async function deleteScreening(id){
+  setLibraryBusy(true);setError('');try{await removeRun(id);setHistory(previous=>previous.filter(r=>r.id!==id));if(currentSnapshot.current===id){setResults([]);setSnapshot('');currentSnapshot.current='';}await refreshJobs();setLibraryNote('Screening deleted. The saved job and its CV text remain.');}catch(e){setError(e.message);}finally{setLibraryBusy(false);}
+ }
+ async function newJob(){await clearResumes();setJob('');setJobTitle('');setSkills([]);setCriteria([]);setYears('');setDegree('');setSavedJobId('');setHistory([]);setSnapshot('');currentSnapshot.current='';setLibraryNote('New unsaved job. Save it to keep CVs and screening history.');}
 
- const requirements=()=>({skills,minimum_years:years===''?null:Number(years),education:degree});
+
+ const requirements=()=>({skills,criteria,minimum_years:years===''?null:Number(years),education:degree});
 
  const changed=()=>{revision.current+=1;setDirty(true);setReviewed(false);};
  async function login(e) {
   e.preventDefault();setError('');
-  try{const session=await signIn(tokenDraft);setAuthenticated(true);setRetention(session.retention_seconds);setTokenDraft('');}
+  try{const session=await signIn(tokenDraft);setAuthenticated(true);setRetention(session.retention_seconds);setTokenDraft('');await refreshJobs();}
   catch(e){setError(e.message);setTokenDraft('');}
  }
  async function deleteServerExports() {
-  try{await deleteAllShortlists();setDeletionNote('Server export snapshots deleted.');setSnapshot('');currentSnapshot.current='';return true;}
+  try{await deleteAllShortlists();setDeletionNote('Temporary export snapshots deleted. Saved history is unchanged.');if(!currentSnapshot.current.startsWith('run_')){setSnapshot('');currentSnapshot.current='';}return true;}
   catch(e){setDeletionNote('Server deletion failed. Retry below; retained snapshots expire automatically. '+e.message);return false;}
  }
- async function logout(){const cleanup=clearResumes();clearAccessToken();setAuthenticated(false);setTokenDraft('');await cleanup;}
+ async function logout(){libraryVersion.current+=1;await clearResumes();clearAccessToken();setAuthenticated(false);setTokenDraft('');setSavedJobs([]);setHistory([]);setJob('');setJobTitle('');setSavedJobId('');setSkills([]);setCriteria([]);setYears('');setDegree('');setSnapshot('');currentSnapshot.current='';setLibraryNote('');}
 
 
  function extract(text) { setJob(text); changed(); }
@@ -79,9 +121,9 @@ function App() {
 
    if(revision.current!==version){setApiNote('Inputs changed during extraction. Kept your edits; extract again when ready.');return;}
 
-   setSkills(data.requirements.skills);setYears(data.requirements.minimum_years??'');setDegree(data.requirements.education);changed();
+   setSkills(data.requirements.skills);setCriteria(data.requirements.criteria||[]);setYears(data.requirements.minimum_years??'');setDegree(data.requirements.education);changed();
 
-   setApiNote(data.warnings.join(' '));
+   setApiNote((data.method==='local_semantic_extraction'?'Local AI-assisted source extraction. ':'Source-based extraction. ')+data.warnings.join(' '));
 
   } catch(e) {setApiNote(e.name==='AbortError'?'Extraction timed out. Your edits are preserved.':'Could not extract. Start the local API, then retry. '+e.message);}
 
@@ -96,7 +138,7 @@ function App() {
   uploads.current.get(id)?.abort();uploads.current.delete(id);
 
   setFiles(previous=>previous.filter(f=>f.id!==id));setResults([]);setOpen({});changed();
-  if(authenticated)void deleteServerExports();
+  if(authenticated&&currentSnapshot.current&&!currentSnapshot.current.startsWith('run_'))void deleteServerExports();
 
  }
 
@@ -170,7 +212,7 @@ function App() {
 
  function addPaste() {if(uploading)return;if(!resumeText.trim())return; if(resumeText.length>200000){setError('Resume text exceeds 200,000 characters.');return;} if(files.length>=10){setError('Remove a resume before adding another.');return;}setFiles([...files,{id:crypto.randomUUID(),name:`Pasted resume ${files.filter(f=>f.pasted).length+1}`,text:resumeText,pasted:true,status:'parsed'}]);setResumeText('');setPaste(false);changed();}
 
- async function sample() {await clearResumes();extract(sampleJob);setYears('1');setDegree('Diploma');setFiles(samplePeople.map(([name,email,text])=>({id:crypto.randomUUID(),name:`${name.replaceAll(' ','_')}.txt`,person:name,email,text:`${name}\n${email}\n${text}`})));setResults([]);setError('');}
+ async function sample() {await newJob();extract(sampleJob);setYears('1');setDegree('Diploma');setFiles(samplePeople.map(([name,email,text])=>({id:crypto.randomUUID(),name:`${name.replaceAll(' ','_')}.txt`,person:name,email,text:`${name}\n${email}\n${text}`})));setResults([]);setError('');}
 
  async function screen() {
 
@@ -186,19 +228,16 @@ function App() {
 
   try {
 
-   const data=await matchShortlist({requirements:requirements(),reviewed:true,candidates:files.map(f=>({id:f.id,text:f.text,display_label:(f.person||f.name).slice(0,160),parse_status:f.unparsed?(f.status==='needs_text'?'needs_text':'error'):'parsed',warnings:f.warnings||[]}))},controller.signal);
-
-   if(version!==revision.current){await deleteShortlist(data.snapshot_id).catch(()=>setDeletionNote('Unused export snapshot deletion failed; it will expire automatically.'));setError('Inputs changed while matching. Review requirements and match again.');return;}
+   let activeJob=savedJobId;
+   if(activeJob) activeJob=await saveWorkspace();
+   if(version!==revision.current)return;
+   const data=await matchShortlist({requirements:requirements(),reviewed:true,candidates:candidateInputs(),...(activeJob?{job_id:activeJob}:{})},controller.signal);
+   if(version!==revision.current){if(!data.snapshot_id.startsWith('run_'))await deleteShortlist(data.snapshot_id).catch(()=>{});setError('Inputs changed while matching. Review requirements and match again.');return;}
    const previous=currentSnapshot.current;setSnapshot(data.snapshot_id);currentSnapshot.current=data.snapshot_id;
-   if(previous&&previous!==data.snapshot_id)void deleteShortlist(previous).catch(()=>setDeletionNote('Previous export snapshot will expire automatically.'));
+   if(previous&&previous!==data.snapshot_id&&!previous.startsWith('run_'))void deleteShortlist(previous).catch(()=>setDeletionNote('Previous export snapshot will expire automatically.'));
+   showResults(data,files);
+   if(activeJob){const runs=await listRuns(activeJob);if(version===revision.current)setHistory(runs.runs);await refreshJobs();}
 
-   setResults(data.results.map(r=>{
-
-    const f=files.find(f=>f.id===r.id), index=files.indexOf(f);
-
-    return {...f,...r,index,person:f.person||f.name,email:f.email||'',unparsed:r.score===null,matched:r.skills.filter(s=>s.status==='supported'),missing:r.skills.filter(s=>s.status!=='supported')};
-
-   }));setMatchNotice(data.notice);setDirty(false);setOpen({});
 
   } catch(e) {setError(e.name==='AbortError'?'Matching timed out. Existing results are preserved.':'Matching failed. '+e.message);}
 
@@ -216,9 +255,22 @@ function App() {
  if(!authenticated)return <main className="mx-auto w-full max-w-[600px] auth-panel"><h1>Resume screener</h1><p>Sign in with the personal access token issued by your administrator. Tokens stay in this tab and are cleared on sign-out or refresh.</p><form onSubmit={login}><label htmlFor="access-token">Access token</label><input id="access-token" type="password" autoComplete="off" value={tokenDraft} onChange={e=>setTokenDraft(e.target.value)}/><button className="primary" disabled={!tokenDraft.trim()} type="submit">Sign in</button></form>{error&&<p className="error" role="alert">{error}</p>}{deletionNote&&<p role="status">{deletionNote}</p>}</main>;
  return <main className="mx-auto w-full max-w-[1080px]">
 
-  <div className="intro flex items-center justify-between gap-3"><span className="flex items-center gap-2"><span className="brandmark">s</span><b>shortlist<span className="font-normal"> studio</span></b></span><span className="demo-label">PRIVATE · EVIDENCE MATCHING</span><button className="text-link" onClick={logout}>Sign out</button></div>
+  <div className="intro flex items-center justify-between gap-3"><span className="flex items-center gap-2"><span className="brandmark">s</span><b>shortlist<span className="font-normal"> studio</span></b></span><span className="demo-label">PRIVATE · EVIDENCE MATCHING</span><button className="text-link" disabled={libraryBusy||busy||uploading} onClick={logout}>Sign out</button></div>
 
-  <section className="screener"><header className="flex items-center justify-between gap-3"><h1>Resume screener</h1><span className="remaining">{10-files.length} of 10 resume slots available</span></header>
+  <section className="library-panel" aria-label="Saved jobs and screening history">
+   <h2>Saved jobs & screening history</h2>
+   <p>Save a job to retain its requirements, parsed CV text and future screenings until you delete them. Original PDF/DOCX files are not stored. Sign-out and Clear all only clear the current workspace.</p>
+   <div className="library-actions"><label htmlFor="job-title">Job title <input id="job-title" maxLength={160} value={jobTitle} disabled={libraryBusy||busy||uploading} onChange={e=>{setJobTitle(e.target.value);changed();}} placeholder="e.g. QA Engineer"/></label>
+   <button className="outline" disabled={libraryBusy||busy||uploading||!jobTitle.trim()} onClick={saveCurrent}>{savedJobId?'Update saved job & CVs':'Save job & CVs'}</button>
+   <button className="outline" disabled={libraryBusy||busy||uploading} onClick={newJob}>New job</button>
+   <button className="text-link" disabled={libraryBusy||busy||uploading} onClick={refreshJobs}>Refresh saved jobs</button></div>
+   {libraryNote&&<p role="status">{libraryNote}</p>}
+   {error&&<p className="error" role="alert">{error}</p>}
+   <div className="library-list">{savedJobs.length?savedJobs.map(item=><div className="library-row" key={item.id}><span><b>{item.title}</b> · {item.run_count} screenings</span><button className="outline" disabled={libraryBusy||busy||uploading} onClick={()=>openSavedJob(item.id)}>Open job</button><details><summary>Delete job</summary><p>Delete this job, its saved CV text and every screening? This cannot be undone.</p><button className="outline" disabled={libraryBusy||busy||uploading} onClick={()=>deleteSavedJob(item.id)}>Delete job and all history</button></details></div>):<p>No saved jobs yet.</p>}</div>
+   {savedJobId&&<div><h3>Screening history</h3>{history.length?history.map(run=><div className="library-row" key={run.id}><span>{new Date(run.created*1000).toLocaleString()}</span><button className="outline" disabled={libraryBusy||busy||uploading} onClick={()=>openScreening(run.id)}>Open screening</button><details><summary>Delete screening</summary><button className="outline" disabled={libraryBusy||busy||uploading} onClick={()=>deleteScreening(run.id)}>Permanently delete screening</button></details></div>):<p>No screenings saved yet. Match resumes for this saved job to create one.</p>}</div>}
+  </section>
+
+  <fieldset disabled={libraryBusy}><section className="screener"><header className="flex items-center justify-between gap-3"><h1>Resume screener</h1><span className="remaining">{10-files.length} of 10 resume slots available</span></header>
 
    <div className="grid md:grid-cols-[1.05fr_1fr]">
 
@@ -232,11 +284,13 @@ function App() {
 
      <p className="helper">Review extracted requirements or enter them manually. Skills found in your job description. Tap a skill to make it a must-have. Unverified must-haves appear in a separate review group; they are never automatically rejected.</p>
 
-     <div className="skills flex flex-wrap gap-2">{skills.length?skills.map(s=><button key={s.name} aria-pressed={s.must} className={'chip '+(s.must?'must':'')} onClick={()=>{setSkills(skills.map(x=>x.name===s.name?{...x,must:!x.must}:x));changed();}}>{s.must&&<span>★ </span>}{s.name}</button>):<span className="empty-skills">Your skill chips will appear here</span>}</div>
+     <div className="skills flex flex-wrap gap-2">{skills.length?skills.map(s=><span className="skill-control" key={s.name}><button aria-pressed={s.must} className={'chip '+(s.must?'must':'')} onClick={()=>{setSkills(skills.map(x=>x.name===s.name?{...x,must:!x.must}:x));changed();}}>{s.must&&<span>★ </span>}{s.name}</button><button className="remove-skill" aria-label={`Remove skill ${s.name}`} onClick={()=>{setSkills(skills.filter(x=>x.name!==s.name));changed();}}>×</button></span>):<span className="empty-skills">Your skill chips will appear here</span>}</div>
 
      <form className="flex gap-2" onSubmit={addSkill}><input aria-label="New skill" className="min-w-0 flex-1" placeholder="Add a skill, e.g. Kubernetes" maxLength={60} value={newSkill} onChange={e=>setNewSkill(e.target.value)}/><button className="outline" type="submit">Add</button></form>
 
-     <div className="requirements flex flex-wrap items-center gap-3"><label htmlFor="years">Minimum years</label><input id="years" type="number" min="0" max="60" step="0.5" value={years} onChange={e=>{setYears(e.target.value);changed();}}/><label htmlFor="degree">Minimum<br/>degree</label><select id="degree" value={degree} onChange={e=>{setDegree(e.target.value);changed();}}><option value="">Any degree</option><option>Diploma</option><option>Bachelor</option><option>Master</option><option>PhD</option></select></div>
+     <div className="requirements flex flex-wrap items-center gap-3"><label htmlFor="years">Minimum years</label><input id="years" type="number" min="0" max="60" step="0.5" value={years} onChange={e=>{setYears(e.target.value);changed();}}/><label htmlFor="degree">Minimum<br/>degree</label><select id="degree" value={degree} onChange={e=>{setDegree(e.target.value);changed();}}><option value="">No required degree</option><option>Diploma</option><option>Bachelor</option><option>Master</option><option>PhD</option></select></div>
+
+     {criteria.length>0&&<details className="extracted-criteria" open><summary>Source requirements · {criteria.length} clauses</summary><p className="helper">Required qualifications, preferred criteria and duties are preserved below. Edit labels/text or remove irrelevant clauses. These additional criteria require human review and do not change the current skills/experience/degree score.</p>{criteria.map((c,index)=><section className="source-criterion" key={c.id}><div className="flex items-center justify-between gap-2"><b>{c.category}</b><select aria-label={`Priority for criterion ${index+1}`} value={c.importance} onChange={e=>{setCriteria(criteria.map(x=>x.id===c.id?{...x,importance:e.target.value}:x));changed();}}><option value="required">Required</option><option value="preferred">Preferred / added advantage</option><option value="review">Needs review / duty</option></select><button className="text-link" aria-label={`Remove criterion ${index+1}`} onClick={()=>{setCriteria(criteria.filter(x=>x.id!==c.id));changed();}}>Remove</button></div><textarea aria-label={`Requirement clause ${index+1}`} maxLength={1000} value={c.text} onChange={e=>{setCriteria(criteria.map(x=>x.id===c.id?{...x,text:e.target.value}:x));changed();}}/><small>Job description line {c.source_line}</small><details><summary>Original source</summary><blockquote>{c.source_quote}</blockquote></details></section>)}</details>}
 
      <label className="review-confirm"><input type="checkbox" checked={reviewed} onChange={e=>setReviewed(e.target.checked)}/> I reviewed these requirements and confirmed they describe job qualifications, without protected or personal attributes.</label>
 
@@ -250,10 +304,10 @@ function App() {
 
      {paste&&<div className="paste-box"><label htmlFor="resume">Resume text</label><textarea id="resume" value={resumeText} onChange={e=>setResumeText(e.target.value)} placeholder="Paste a candidate’s resume, including name, skills and experience…"/><div className="flex justify-end gap-2"><button className="outline" onClick={()=>setPaste(false)}>Cancel</button><button className="small-primary" onClick={addPaste} disabled={uploading||!resumeText.trim()}>Add resume</button></div></div>}
 
-     <p className="helper">Original files are not saved. Parsed text stays in this tab; minimal server export snapshots expire automatically. Remove or Clear all to discard text and delete server exports. No external OCR or AI.</p>
+     <p className="helper">Original files are not stored. Save job & CVs retains parsed text on the server until job deletion. Removing CVs or Clear all clears this workspace; update the saved job to change its CV list. Historical screenings retain their own CV text until you delete them. No external OCR or AI.</p>
 
      {files.length>0&&<button className="text-link" onClick={clearResumes}>Clear all resumes</button>}
-     <p className="helper">Server export retention: {Math.round(retention/60)} minutes. Downloads are separate copies on your device.</p><button className="text-link" onClick={deleteServerExports}>Delete all my server exports</button>{deletionNote&&<p role="status" className="helper">{deletionNote}</p>}
+     <p className="helper">Temporary export retention: {Math.round(retention/60)} minutes. Downloads are separate copies on your device.</p><button className="text-link" onClick={deleteServerExports}>Delete temporary exports</button>{deletionNote&&<p role="status" className="helper">{deletionNote}</p>}
 
      <ul className="file-list">{files.map(f=><li key={f.id}><FileText size={16}/><div className="min-w-0 flex-1 break-words"><span>{f.name}</span><small role="status">{f.status==='parsing'?'Parsing locally…':f.parseError||((f.status==='needs_text')?'No readable text — paste text instead.':`${f.text.length.toLocaleString()} characters available`)}</small>{f.warnings?.map((warning,i)=><small key={i}>{warning}</small>)}{f.text&&<details><summary>Review parsed text</summary><pre className="parsed-preview">{f.text}</pre></details>}</div><button className="remove" aria-label={`Remove ${f.name}`} onClick={()=>removeResume(f.id)}>{f.status==='parsing'?'Cancel':'Remove'}</button></li>)}</ul>
 
@@ -263,7 +317,7 @@ function App() {
 
    </div>
 
-   <div className="action-bar"><div><div className="flex flex-wrap items-center gap-x-4 gap-y-3"><button className="primary" onClick={screen} disabled={busy||uploading}>{busy?'Matching…':`${results.length?'Re-match':'Match'} ${files.length||''} resume${files.length===1?'':'s'}`}</button><button className="text-link" disabled={uploading} onClick={sample}>Try a sample job and 5 resumes</button></div><p className="action-note">{results.length?'Review requirements again after changing inputs.':'Evidence matching supports your review; it does not decide who to hire.'}</p></div><p className="privacy"><ShieldCheck size={18}/><span><b>Authenticated parsing and matching.</b><br/>Full CV text is not retained on the server. Export fields have a limited retention period.</span></p></div>
+   <div className="action-bar"><div><div className="flex flex-wrap items-center gap-x-4 gap-y-3"><button className="primary" onClick={screen} disabled={busy||uploading||libraryBusy}>{busy?'Matching…':`${results.length?'Re-match':'Match'} ${files.length||''} resume${files.length===1?'':'s'}`}</button><button className="text-link" disabled={uploading} onClick={sample}>Try a sample job and 5 resumes</button></div><p className="action-note">{results.length?'Review requirements again after changing inputs.':'Evidence matching supports your review; it does not decide who to hire.'}</p></div><p className="privacy"><ShieldCheck size={18}/><span><b>Authenticated parsing and matching.</b><br/>Saved jobs retain CV text and screening history until deletion. Unsaved matches use temporary export snapshots.</span></p></div>
 
    {error&&<p className="error" role="alert">{error}</p>}
 
@@ -275,19 +329,21 @@ function App() {
 
       <div><h4>Skill evidence</h4>{r.skills.length?r.skills.map(c=><section className="criterion" key={c.name}><b>{c.name}{c.must?' ★':''} · {c.status.replaceAll('_',' ')}</b><p>{c.reason}</p>{c.similarity!=null&&<p>Semantic similarity: {c.similarity.toFixed(3)} · human verification required</p>}<Evidence items={c.evidence} sourceName={blind?'Resume source':r.name}/></section>):<p>No skill requirements.</p>}</div>
 
+      {(r.additional_criteria||[]).length>0&&<div><h4>Additional requirements · human review</h4><p>These source requirements are retained for verification and are not included in the numeric score.</p>{r.additional_criteria.map(c=><section className="criterion" key={c.id}><b>{c.importance} · {c.category}</b><p>{c.text}</p><small>From job description line {c.source_line}. Verify against the candidate's CV and supporting documents.</small></section>)}</div>}
+
       {['experience','education'].map(key=><section className="criterion" key={key}><h4>{key==='experience'?'Experience':'Education'} · {r[key].status.replaceAll('_',' ')}</h4><p>{r[key].reason}</p><Evidence items={r[key].evidence} sourceName={blind?'Resume source':r.name}/></section>)}
 
       {r.warnings.map((warning,i)=><p className="stale" key={i}>{warning}</p>)}
 
       {r.text&&<details><summary>View source text with line references</summary><div className="parsed-preview">{r.text.split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/).map((line,i)=><div key={i}><span className="source-line">{i+1}</span>{line||' '}</div>)}</div></details>}
 
-      <label className="human-review">Human review <select aria-label={`Human review for candidate ${r.index+1}`} value={r.review_status} disabled={dirty||reviewSaving||!snapshot} onChange={e=>humanReview(r.id,e.target.value)}><option value="pending">Pending review</option><option value="reviewed">Reviewed — undecided</option><option value="shortlisted">Shortlist after human review</option><option value="not_progressing">Do not progress — human decision</option></select></label><p className="text-xs">Review evidence and missing information with the candidate before deciding. Your choice is saved in your private export snapshot until deletion or expiry; it does not alter scores or ranking.</p>
+      <label className="human-review">Human review <select aria-label={`Human review for candidate ${r.index+1}`} value={r.review_status} disabled={dirty||reviewSaving||!snapshot} onChange={e=>humanReview(r.id,e.target.value)}><option value="pending">Pending review</option><option value="reviewed">Reviewed — undecided</option><option value="shortlisted">Shortlist after human review</option><option value="not_progressing">Do not progress — human decision</option></select></label><p className="text-xs">Review evidence and missing information with the candidate before deciding. Your choice is saved with this screening. Saved job history remains until deletion; temporary screenings expire. Reviews do not alter scores or ranking.</p>
 
      </div>}</article>)}{!results.some(r=>shown(r,filter))&&<p className="p-8 text-center">No candidates in this category.</p>}</>}
 
    </section>
 
-  </section><footer className="page-footer">Built for a more thoughtful shortlist. <span>Original interface · Step 4 private export</span></footer>
+  </section></fieldset><footer className="page-footer">Built for a more thoughtful shortlist. <span>Original interface · Step 4 private export</span></footer>
 
  </main>;
 

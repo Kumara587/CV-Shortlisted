@@ -19,7 +19,11 @@ async function call(path, options={}) {
   finally{clearTimeout(timer);options.signal?.removeEventListener('abort',forward);}
   if (!response.ok) {
     if (response.status === 401) throw new Error('Access token is invalid or revoked. Sign in again.');
-    if (response.status === 404) throw new Error('Shortlist was deleted or expired. Match again to create a fresh export.');
+    if (response.status === 404) {
+      if(path==='/api/jobs')throw new Error('Saved jobs API is unavailable. Restart the backend to load the latest project code, then retry.');
+      throw new Error('Record not found, deleted or expired. Refresh saved jobs or match again.');
+    }
+    if (response.status === 409) throw new Error('Saved storage limit reached. Delete an old job or screening and retry.');
     if (response.status === 429) throw new Error('Request limit reached. Wait one minute and retry.');
     if (response.status === 413) throw new Error('Request exceeds the permitted size.');
     if (response.status === 422) throw new Error('Check job requirements, resume inputs and review confirmation.');
@@ -39,6 +43,14 @@ export async function parseResume(file,signal) {
   return (await call('/api/resumes/parse',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream','X-Filename':encodeURIComponent(file.name)},body:file,signal})).json();
 }
 export function matchShortlist(body,signal) {return request('/api/shortlist/match',body,signal);}
+export async function listJobs(){return (await call('/api/jobs')).json();}
+export async function getJob(id){return (await call(`/api/jobs/${encodeURIComponent(id)}`)).json();}
+export async function persistJob(id,body){return (await call(id?`/api/jobs/${encodeURIComponent(id)}`:'/api/jobs',{
+  method:id?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();}
+export async function removeJob(id){return call(`/api/jobs/${encodeURIComponent(id)}`,{method:'DELETE'});}
+export async function listRuns(id){return (await call(`/api/jobs/${encodeURIComponent(id)}/runs`)).json();}
+export async function getRun(id){return (await call(`/api/screenings/${encodeURIComponent(id)}`)).json();}
+export async function removeRun(id){return call(`/api/screenings/${encodeURIComponent(id)}`,{method:'DELETE'});}
 export async function saveReview(snapshot,candidate,status) {
   return (await call(`/api/shortlists/${encodeURIComponent(snapshot)}/reviews`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate_id:candidate,status})})).json();
 }

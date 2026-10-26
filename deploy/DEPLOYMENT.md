@@ -55,3 +55,42 @@ Data is in the `screener_data` Docker volume. The API image creates the mount di
 The gateway disables request/runtime logging; the app logs only fixed route templates and status/event codes. Uvicorn access/error logs are disabled by the provided logging config to avoid unsanitized request/exception data. This trades detailed diagnostics for privacy; use sanitized application health/status events rather than enabling raw access/body logs. Do not enable debug mode.
 
 The API container runs unprivileged, read-only, without Linux capabilities, with no-new-privileges, a private network, a small tmpfs, 1 GiB container memory, one CPU and 64 process/thread limit. Per-parser limits and a wall deadline add containment, but this is not a complete native-code sandbox or malware scanner. Keep the OS, Python, parser and proxy patched. Target-host TLS, container isolation, encrypted storage and dependency scanning must be verified by the operator; these cannot be certified from source-only tests.
+
+## Persistent job library
+
+Saved jobs now retain full parsed CV text, requirements, evidence, scores and
+screening history in SQLite until explicitly deleted. RETENTION_SECONDS only
+expires temporary exports. Token revocation disables access but does not delete
+saved jobs. Delete jobs from the library when permanent removal is intended.
+Keep the existing screener_data volume when upgrading: tables migrate additively.
+Protect this volume and its backups as candidate data. Original upload files are
+still not stored. The app encrypts sensitive fields; the separate mounted encryption key and backups must also be protected. See ENCRYPTION.md before upgrading or restoring.
+
+
+## Encryption secret required
+
+Set host `SCREENER_KEY_FILE` in `.env.production` to a private key file outside
+both the checkout and data volume. Compose mounts it read-only as an API-only
+secret. The production app fails to start without the correct existing key.
+For Linux bind-backed Compose secrets, provision the source file for UID/GID
+10001 with mode 0400 (or 0600); Compose implementations may ignore secret uid/gid/
+mode attributes for file sources, so verify the effective permissions. Keep the
+host parent directory restricted to administrators. Never bake the key into the
+image or commit it. The gateway does not receive the key.
+
+Before upgrading an existing plaintext database, stop the API and DB tools, build
+the new API image, then run the offline migration with an encrypted recovery backup:
+
+```sh
+docker compose --env-file .env.production stop api
+docker compose --env-file .env.production build api
+docker compose --env-file .env.production run --rm api python manage.py migrate-encryption --output /data/pre-encryption.cvbackup
+docker compose --env-file .env.production run --rm api python manage.py verify-encryption
+docker compose --env-file .env.production up -d
+```
+
+Use a new backup filename for every migration. Provision/back up the key before
+this operation. The migration backup can contain pre-encryption records inside
+its encrypted envelope; recovery re-encrypts those records in memory before
+writing a new database. Maintain encryption keys separately from data backups.
+Container deployment/secret permissions still require verification on your host.

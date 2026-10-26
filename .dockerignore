@@ -10,3 +10,7 @@ work
 *.zip
 backend/models
 backend/.venv
+.secrets
+**/*.keys.json
+**/*.cvbackup
+**/*.keybackup

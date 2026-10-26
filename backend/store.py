@@ -1,4 +1,4 @@
-"""Owner-scoped short-lived export snapshots. Raw CVs/evidence are never stored."""
+"""Owner-scoped accounts, temporary exports and explicitly saved job history."""
 from contextlib import contextmanager
 import hashlib
 import json
@@ -7,17 +7,32 @@ from pathlib import Path
 import secrets
 import sqlite3
 import time
+from library import Library, SCHEMA
+from encryption import Cipher, verify_or_initialize
 
 class MissingSnapshot(Exception): pass
 
-class Store:
-    def __init__(self, path, ttl=3600, clock=time.time):
+class Store(Library):
+    def __init__(self, path, ttl=3600, clock=time.time, cipher=None):
         self.path=Path(path)
         self.ttl=ttl
         self.clock=clock
+        self._cipher=cipher
+
+    @property
+    def cipher(self):
+        if self._cipher is None: self._cipher=Cipher.load()
+        return self._cipher
+
+    def seal(self,value,table,column,owner,record):
+        return self.cipher.seal(value,(table,column,owner,record))
+
+    def unseal(self,value,table,column,owner,record):
+        return self.cipher.open(value,(table,column,owner,record))
 
     @contextmanager
-    def connection(self):
+    def connection(self,maintenance=False):
+        cipher=self.cipher
         self.path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
         if not self.path.exists():
             try:
@@ -34,6 +49,9 @@ class Store:
             db.executescript('''CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, token_hash TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1);
             CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES users(id), expires REAL NOT NULL, payload TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS snapshots_owner ON snapshots(owner);''')
+            db.executescript(SCHEMA)
+            verify_or_initialize(db,cipher,maintenance)
+            db.commit()
             yield db
             db.commit()
         finally:
@@ -53,6 +71,14 @@ class Store:
                 db.execute('UPDATE users SET active=0 WHERE id=?',(row['id'],))
                 db.execute('DELETE FROM snapshots WHERE owner=?',(row['id'],))
             return bool(row)
+
+    @staticmethod
+    def export_rows(results,labels):
+        return [{'id':r['id'],'rank':r['rank'],'label':labels.get(r['id'],r['id']),
+                 'score':r['score'],'group':r['group'],'review_status':r.get('review_status','pending'),
+                 'supported_skills':[s['name'] for s in r['skills'] if s['status']=='supported'],
+                 'missing_or_uncertain':r['missing_or_uncertain'],
+                 'must_have_issues':[s['name'] for s in r['must_have_issues']]} for r in results]
 
     def authenticate(self,token):
         if not 40<=len(token)<=100: return None
@@ -76,27 +102,29 @@ class Store:
             if db.execute('SELECT count(*) FROM snapshots WHERE owner=?',(owner,)).fetchone()[0]>=20:
                 old=db.execute('SELECT id FROM snapshots WHERE owner=? ORDER BY expires,id LIMIT 1',(owner,)).fetchone()
                 db.execute('DELETE FROM snapshots WHERE id=?',(old['id'],))
-            db.execute('INSERT INTO snapshots VALUES(?,?,?,?)',(snapshot,owner,expires,json.dumps(payload,ensure_ascii=True)))
+            db.execute('INSERT INTO snapshots VALUES(?,?,?,?)',(snapshot,owner,expires,self.seal(json.dumps(payload,ensure_ascii=True),'snapshots','payload',owner,snapshot)))
         return snapshot,expires
 
     def get(self,owner,snapshot):
+        if snapshot.startswith('run_'): return self.run_export(owner,snapshot)
         self.purge()
         with self.connection() as db:
             row=db.execute('SELECT payload,expires FROM snapshots WHERE id=? AND owner=?',(snapshot,owner)).fetchone()
             if not row: raise MissingSnapshot()
-            return json.loads(row['payload']),row['expires']
+            return json.loads(self.unseal(row['payload'],'snapshots','payload',owner,snapshot)),row['expires']
 
     def review(self,owner,snapshot,candidate,status):
+        if snapshot.startswith('run_'): return self.review_run(owner,snapshot,candidate,status)
         # One transaction prevents concurrent reviews losing each other's updates.
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             row=db.execute('SELECT payload FROM snapshots WHERE id=? AND owner=? AND expires>?',(snapshot,owner,self.clock())).fetchone()
             if not row: raise MissingSnapshot()
-            payload=json.loads(row['payload'])
+            payload=json.loads(self.unseal(row['payload'],'snapshots','payload',owner,snapshot))
             target=next((r for r in payload if r['id']==candidate),None)
             if target is None: raise MissingSnapshot()
             target['review_status']=status
-            db.execute('UPDATE snapshots SET payload=? WHERE id=? AND owner=?',(json.dumps(payload,ensure_ascii=True),snapshot,owner))
+            db.execute('UPDATE snapshots SET payload=? WHERE id=? AND owner=?',(self.seal(json.dumps(payload,ensure_ascii=True),'snapshots','payload',owner,snapshot),snapshot,owner))
 
     def delete(self,owner,snapshot=None):
         with self.connection() as db:
