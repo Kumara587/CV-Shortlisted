@@ -1,6 +1,7 @@
 """Local administrator tool. Tokens are shown once; never save them in frontend files."""
 import argparse
 import os
+import sqlite3
 from pathlib import Path
 from security import Settings
 from store import Store
@@ -18,6 +19,8 @@ def main():
         parser.error('Use an account name of 1–80 letters/digits/underscore/hyphen')
     elif args.action=='create-user':
         try: _,token=store.create_user(args.name)
+        except sqlite3.IntegrityError:
+            parser.exit(1,'Account name already exists. Use its existing access token, or create an account with a different name. Tokens cannot be recovered.\n')
         except Exception:
             parser.exit(1,'Could not create account. Choose a unique account name and check data-directory access.\n')
         print('Copy this access token into the app. It is shown only once:\n'+token)

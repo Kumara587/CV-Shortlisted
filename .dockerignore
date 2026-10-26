@@ -8,3 +8,5 @@ backend/data
 work
 .git
 *.zip
+backend/models
+backend/.venv

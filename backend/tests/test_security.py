@@ -40,6 +40,8 @@ class Client:
 @pytest.fixture
 def secured(tmp_path,monkeypatch):
     monkeypatch.setattr('security.asyncio.timeout',lambda _:NoTimeout())
+    async def inline(function,*args,**kwargs): return function(*args,**kwargs)
+    monkeypatch.setattr('main.run_in_threadpool',inline)
     store=Store(tmp_path/'private.sqlite3')
     _,alice=store.create_user('alice')
     _,bob=store.create_user('bob')
@@ -117,6 +119,8 @@ def test_streamed_and_declared_limits(secured):
 
 def test_tls_gate_and_configuration(tmp_path,monkeypatch):
     monkeypatch.setattr('security.asyncio.timeout',lambda _:NoTimeout())
+    async def inline(function,*args,**kwargs): return function(*args,**kwargs)
+    monkeypatch.setattr('main.run_in_threadpool',inline)
     store=Store(tmp_path/'data.sqlite3');_,token=store.create_user('user')
     settings=Settings(True,('https://app.example.com',),('app.example.com',),3600)
     c=Client(create_app(store,settings),token)

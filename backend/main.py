@@ -3,6 +3,7 @@ import os
 import re
 from typing import Literal
 
+from starlette.concurrency import run_in_threadpool
 from fastapi import FastAPI, APIRouter, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -80,6 +81,7 @@ from urllib.parse import unquote
 from parsing import MAX_BYTES, failure, safe_name
 
 parse_slots = asyncio.Semaphore(2)
+match_slots = asyncio.Semaphore(1)
 
 @router.post('/api/resumes/parse')
 async def parse_resume(request: Request, filename: str = Header(alias='X-Filename', min_length=1, max_length=1024)):
@@ -147,7 +149,10 @@ class MatchRequest(StrictModel):
 
 @router.post('/api/shortlist/match')
 async def match_shortlist(body: MatchRequest, request: Request):
-    result=rank_candidates(body.requirements, body.candidates)
+    if match_slots.locked():
+        raise HTTPException(429, 'Matching is busy. Retry shortly.')
+    async with match_slots:
+        result=await run_in_threadpool(rank_candidates, body.requirements, body.candidates, semantic=True)
     snapshot,expires=request.app.state.store.save(request.state.user_id,result['results'],{c.id:c.display_label or c.id for c in body.candidates})
     result.update(snapshot_id=snapshot,expires_at=expires)
     return JSONResponse(result, headers={'Cache-Control':'no-store', 'Pragma':'no-cache'})
@@ -193,6 +198,13 @@ async def delete_all_snapshots(request: Request):
 @asynccontextmanager
 async def lifecycle(api):
     api.state.store.purge()
+    # Warm the local model before accepting requests, outside the event loop.
+    from semantic import local_model
+    try:
+        await run_in_threadpool(local_model)
+    except Exception:
+        from security import log
+        log.warning('event=semantic_unavailable route=maintenance')
     async def cleanup():
         while True:
             await asyncio.sleep(30)

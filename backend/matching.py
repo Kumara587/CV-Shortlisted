@@ -35,7 +35,7 @@ def skill_pattern(name):
     parts=[r'\s+'.join(re.escape(token) for token in unicodedata.normalize('NFKC',a).split()) for a in aliases]
     return re.compile(r'(?<![\w+#])(?:'+ '|'.join(parts)+r')(?![\w+#])',re.I)
 
-def score_candidate(requirements, candidate):
+def score_candidate(requirements, candidate, semantic_model=None):
     source=candidate.id
     rows=list(segments(candidate.text))
     criteria=[]
@@ -91,6 +91,16 @@ def score_candidate(requirements, candidate):
             education.update(status=state,level=name,credit=1 if state=='meets' else 0,reason=('Conflicting completed and negated education claims; verify qualification.' if conflict else f'Self-reported {name}; requires {requirements.education}. Institution, prestige and graduation year are not scored.'),evidence=[ev]+[ev for _,_,ev in pending[:2]])
         else:
             education.update(status='uncertain' if pending else 'not_evidenced',credit=0,reason='Only incomplete/negated education claims found; verify completion.' if pending else 'No recognized degree claim found; verify qualification or equivalent experience.',evidence=[ev for _,_,ev in pending[:3]])
+    if semantic_model is not None and candidate.parse_status == 'parsed':
+        from semantic import find_matches
+        suggestions = find_matches([s['name'] for s in criteria if s['status']=='not_evidenced'], rows, semantic_model)
+        for criterion in criteria:
+            suggestion = suggestions.get(criterion['name'])
+            if suggestion:
+                criterion.update(status='semantic_review', credit=0.5,
+                    similarity=suggestion['similarity'],
+                    reason='AI found related meaning, not verified skill proficiency. Half credit; human verification required. Similarity is not a probability.',
+                    evidence=[evidence(source,suggestion['line'],suggestion['quote'])])
     weights={'skills':80 if criteria else 0,'experience':10 if minimum is not None and minimum>0 else 0,'education':10 if requirements.education else 0}
     components={}
     total=sum(weights.values())
@@ -106,10 +116,29 @@ def score_candidate(requirements, candidate):
     if education['status'] not in {'meets','not_required'}: uncertainties.append('education')
     return {'id':source,'score':score,'group':group,'skills':criteria,'experience':experience,'education':education,'components':components,'must_have_issues':must_issues,'missing_or_uncertain':uncertainties,'review_status':'pending','review_required':True,'warnings':(['No usable parsed text; no score assigned.'] if not usable else [])+(['No active requirements; no score assigned.'] if not total else [])+list(candidate.warnings),'method':VERSION}
 
-def rank_candidates(requirements,candidates):
-    results=[score_candidate(requirements,c) for c in candidates]
+def rank_candidates(requirements,candidates,semantic=False):
+    model=None
+    semantic_error=False
+    if semantic:
+        try:
+            from semantic import local_model
+            model=local_model()
+        except Exception:
+            semantic_error=True
+    try:
+        results=[score_candidate(requirements,c,model) for c in candidates]
+    except Exception:
+        if model is None: raise
+        results=[score_candidate(requirements,c) for c in candidates]
+        model=None
+        semantic_error=True
+    method='hybrid-local-semantic-v1' if model is not None else VERSION
+    for result in results:
+        result['method']=method
+        if semantic and model is None:
+            result['warnings'].append('Local semantic model unavailable; explicit matching used. Run backend/setup_semantic.py after installing requirements-semantic.txt.' if not semantic_error else 'Local semantic inference failed; explicit matching used.')
     # Ties use opaque source IDs, not names, protected attributes or text order.
     priority={'requirements_review':0,'must_have_review':1,'unscored':2}
     results.sort(key=lambda r:(priority[r['group']],-(r['score'] if r['score'] is not None else -1),r['id']))
     for rank,result in enumerate(results,1): result['rank']=rank
-    return {'method':VERSION,'requirements':requirements.model_dump(),'results':results,'notice':'Evidence coverage only, not predicted job performance or a hiring decision. Every candidate requires human review. Missing evidence does not prove missing ability. Rankings separate must-have review cases; no candidate is automatically rejected.'}
+    return {'method':method,'requirements':requirements.model_dump(),'results':results,'notice':('Local AI semantic matching enabled. Related evidence receives half credit and requires verification. ' if model is not None else 'Explicit matching only. ')+'Evidence coverage only, not predicted job performance or a hiring decision. Every candidate requires human review. Missing evidence does not prove missing ability. Rankings separate must-have review cases; no candidate is automatically rejected.'}

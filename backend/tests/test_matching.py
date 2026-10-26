@@ -85,7 +85,9 @@ def test_review_and_unique_id_validation():
     with pytest.raises(ValidationError): MatchRequest(requirements={},reviewed=False,candidates=[{'id':'a','text':'Python'}])
     with pytest.raises(ValidationError): MatchRequest(requirements={},reviewed=True,candidates=[{'id':'a','text':'Python'}]*2)
 
-def test_route_without_network():
+def test_route_without_network(monkeypatch):
+    async def inline(function,*args,**kwargs): return function(*args,**kwargs)
+    monkeypatch.setattr('main.run_in_threadpool',inline)
     body=MatchRequest(requirements={'skills':[{'name':'Python'}]},reviewed=True,candidates=[{'id':'a','text':'Python'}])
     from types import SimpleNamespace
     class SnapshotStore:
