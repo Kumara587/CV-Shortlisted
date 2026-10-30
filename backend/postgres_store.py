@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from threading import Lock
 import sqlite3
+import os
 import psycopg
 from urllib.parse import urlsplit
 from store import Store
@@ -105,8 +106,15 @@ class PostgresStore(Store):
             cipher=self.cipher
             with self._connect() as raw:
                 raw.execute('SELECT pg_advisory_xact_lock(%s)',(LOCK_ID,))
-                for statement in (SCHEMA+AUTH_SCHEMA).split(';'):
-                    if statement.strip():raw.execute(statement)
+                mode=os.getenv('SCREENER_SCHEMA_MODE','create')
+                if mode=='verify-only':
+                    from psycopg import sql
+                    for table in ('users','jobs','screenings','snapshots','storage_meta','auth_accounts','auth_sessions','auth_tokens'):
+                        raw.execute(sql.SQL('SELECT 1 FROM {} LIMIT 0').format(sql.Identifier(table)))
+                elif mode=='create':
+                    for statement in (SCHEMA+AUTH_SCHEMA).split(';'):
+                        if statement.strip():raw.execute(statement)
+                else:raise ValueError('Invalid schema initialization mode')
                 verify_or_initialize(Connection(raw),cipher,maintenance,metadata_ready=True)
             self._initialized=True
 
