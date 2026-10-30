@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from threading import Lock
 import sqlite3
 import psycopg
+from urllib.parse import urlsplit
 from store import Store
 from encryption import verify_or_initialize, StorageSecurityError
 from auth_store import AUTH_SCHEMA
@@ -84,8 +85,12 @@ class PostgresStore(Store):
 
     def _connect(self):
         try:
+            tls={}
+            if (urlsplit(self.url).hostname or '').endswith('.neon.tech'):
+                import certifi
+                tls={'sslmode':'verify-full','sslrootcert':certifi.where()}
             raw=psycopg.connect(self.url,connect_timeout=5,application_name='cv-shortlisted',
-                options='-c statement_timeout=15000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=30000')
+                options='-c statement_timeout=15000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=30000',**tls)
             if self.search_path:
                 from psycopg import sql
                 raw.execute(sql.SQL('SET search_path TO {}').format(sql.Identifier(self.search_path)))
