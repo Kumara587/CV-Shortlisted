@@ -7,6 +7,8 @@ __pycache__/
 data/
 *.sqlite3*
 .env.production
+.env.*
+!.env.example
 backend/models/
 .secrets/
 *.keys.json
@@ -15,3 +17,4 @@ backend/models/
 *.url
 *.credentials.json
 backend/pgdata/
+.neon
