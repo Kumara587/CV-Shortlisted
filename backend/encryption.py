@@ -101,7 +101,7 @@ class Cipher:
             raise StorageSecurityError('Encrypted data context cannot be verified.') from None
 
 
-FIELDS = {'jobs':('title','workspace'), 'screenings':('document','export_rows'), 'snapshots':('payload',)}
+FIELDS = {'jobs':('title','workspace'), 'screenings':('document','export_rows'), 'snapshots':('payload',),'auth_accounts':('display_name',)}
 CHECK_CONTEXT = ('storage_meta','check','','1')
 KEY_BACKUP_MAGIC=b'CVKEYBACKUP1\n'
 
@@ -134,8 +134,9 @@ def restore_key(source,destination,password):
     private_write(destination,raw)
 
 
-def verify_or_initialize(db, cipher, maintenance=False):
-    db.execute('CREATE TABLE IF NOT EXISTS storage_meta(id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL)')
+def verify_or_initialize(db, cipher, maintenance=False, metadata_ready=False):
+    if not metadata_ready:
+        db.execute('CREATE TABLE IF NOT EXISTS storage_meta(id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL)')
     row=db.execute('SELECT token FROM storage_meta WHERE id=1').fetchone()
     if row:
         if cipher.open(row[0],CHECK_CONTEXT)!='cv-storage-v1':
@@ -150,7 +151,8 @@ def encrypt_existing(db,cipher):
     """Caller owns one transaction. Validate encrypted fields; migrate plaintext."""
     count=0
     for table,columns in FIELDS.items():
-        for row in db.execute(f"SELECT id,owner,{','.join(columns)} FROM {table}").fetchall():
+        owner='id' if table=='auth_accounts' else 'owner'
+        for row in db.execute(f"SELECT id,{owner},{','.join(columns)} FROM {table}").fetchall():
             updates=[]
             for column,value in zip(columns,row[2:]):
                 context=(table,column,row[1],row[0])
@@ -165,9 +167,10 @@ def encrypt_existing(db,cipher):
 
 def verify_fields(db,cipher):
     count=0
-    verify_or_initialize(db,cipher,maintenance=True)
+    verify_or_initialize(db,cipher,maintenance=True,metadata_ready=True)
     for table,columns in FIELDS.items():
-        for row in db.execute(f"SELECT id,owner,{','.join(columns)} FROM {table}"):
+        owner='id' if table=='auth_accounts' else 'owner'
+        for row in db.execute(f"SELECT id,{owner},{','.join(columns)} FROM {table}"):
             for column,value in zip(columns,row[2:]):
                 cipher.open(value,(table,column,row[1],row[0]))
             count+=1

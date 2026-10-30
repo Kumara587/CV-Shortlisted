@@ -1,4 +1,4 @@
-"""Open-vocabulary, source-grounded JD extraction with optional local AI labels."""
+"""Open-vocabulary, source-grounded JD extraction for the explicit legacy API."""
 import re
 from matching import prohibited_requirement
 
@@ -13,14 +13,6 @@ HEADINGS = [
  ('general',r'requirements|what you(?:.ll| will) need'),
  ('other',r'about (?:us|the company)|benefits|how to apply'),
 ]
-LABELS = {
- 'skill':'Professional skills, abilities and workplace competencies required for a job.',
- 'education':'Educational qualifications, school examinations, academic degrees or professional certifications.',
- 'experience':'Required years of previous work experience in a professional field.',
- 'responsibility':'Job duties, tasks and responsibilities performed by an employee.',
- 'language':'Required spoken or written language communication proficiency.',
- 'other':'Company information, employee benefits and application instructions.',
-}
 DEGREES = [('Diploma',r'\bdiploma\b'),('Bachelor',r"\bbachelor(?:['’]s)?\b|\bb\.?sc\b|\bundergraduate\b"),('Master',r"\bmaster(?:['’]s)?\b|\bm\.?sc\b"),('PhD',r'\bph\.?d\b|\bdoctorate\b')]
 
 
@@ -75,31 +67,12 @@ def heuristic_category(text,section):
     return None if section=='general' else section or None
 
 
-def extract_document(text,use_ai=False):
+def extract_document(text):
     warnings=[]; clauses=source_clauses(text)
     if len(clauses)>100:
         warnings.append('Only the first 100 source clauses were processed. Review the remaining job description.');clauses=clauses[:100]
-    model=None
-    if use_ai:
-        try:
-            from semantic import local_model
-            model=local_model()
-        except Exception: pass
     categories=[heuristic_category(c['text'],c['section']) for c in clauses]
-    if model is not None and clauses:
-        try:
-            from semantic import _lock
-            with _lock:
-                vectors=model.encode(list(LABELS.values())+[c['text'] for c in clauses],normalize_embeddings=True,show_progress_bar=False,batch_size=32)
-            for i,category in enumerate(categories):
-                if category is None:
-                    scores=vectors[:len(LABELS)] @ vectors[len(LABELS)+i]
-                    categories[i]=list(LABELS)[int(scores.argmax())] if float(scores.max())>=0.25 else 'other'
-        except Exception:
-            model=None
-            warnings.append('Local AI classification failed; source clauses remain available for manual review.')
-    if model is None:
-        warnings.append('Source-based extraction is active; local AI classification is unavailable.')
+    warnings.append('Legacy source-based extraction; current AI requests use Gemini.')
     criteria=[]; excluded=False
     for clause,category in zip(clauses,categories):
         value=clause['text']
@@ -139,4 +112,4 @@ def extract_document(text,use_ai=False):
     if excluded: warnings.append('Personal/protected-attribute criteria were omitted. Review job-related language proficiency separately from ethnicity.')
     warnings.append('Review every extracted clause and its required/preferred label. Additional criteria are for human review and do not change the current skills/experience/degree score.')
     return {'requirements':{'skills':skills,'minimum_years':min(years) if years else None,'education':degree,'criteria':criteria},
-            'method':'local_semantic_extraction' if model is not None else 'source_based_extraction', 'warnings':warnings}
+            'method':'source_based_extraction', 'warnings':warnings}

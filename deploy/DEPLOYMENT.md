@@ -1,3 +1,7 @@
+# PostgreSQL deployment update
+
+The active database is PostgreSQL. Follow [POSTGRESQL.md](POSTGRESQL.md) for database secrets, role initialization, verified cutover and recovery. The historical SQLite instructions below apply only to retained migration sources.
+
 # Deploy on a server you control
 
 Use a real domain with DNS pointing to the server and inbound TCP 80/443 available. Install Docker Engine and Docker Compose. Use an encrypted server disk/volume and restrict operator access. The source package contains no real account tokens, CVs or database.

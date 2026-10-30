@@ -32,15 +32,31 @@ services:
       RETENTION_SECONDS: ${RETENTION_SECONDS:-3600}
       SCREENER_DATA_DIR: /data
       SCREENER_KEY_FILE: /run/secrets/screener_storage_key
+      DATABASE_URL_FILE: /run/secrets/screener_database_url
+      AUTH_CONFIG_FILE: /run/secrets/screener_auth
+    depends_on:
+      database:
+        condition: service_healthy
     secrets:
       - source: screener_storage_key
         target: screener_storage_key
         uid: "10001"
         gid: "10001"
         mode: 0400
+      - source: screener_database_url
+        target: screener_database_url
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: screener_auth
+        target: screener_auth
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     volumes:
       - screener_data:/data
     networks:
+      edge: {}
       private:
         ipv4_address: 172.30.0.3
     read_only: true
@@ -54,6 +70,31 @@ services:
     mem_limit: 1g
     cpus: 1.0
     restart: unless-stopped
+  database:
+    image: postgres:18-alpine
+    command: ["postgres", "-c", "log_statement=none", "-c", "log_min_error_statement=panic", "-c", "log_parameter_max_length_on_error=0"]
+    environment:
+      POSTGRES_USER: cv_admin
+      POSTGRES_DB: cv_shortlisted
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    secrets:
+      - postgres_admin_password
+      - postgres_app_password
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./deploy/postgres-init.sql:/docker-entrypoint-initdb.d/10-app-role.sql:ro
+    networks:
+      private: {}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cv_admin -d cv_shortlisted"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
 networks:
   edge: {}
   private:
@@ -65,6 +106,15 @@ volumes:
   screener_data: {}
   caddy_data: {}
   caddy_config: {}
+  postgres_data: {}
 secrets:
   screener_storage_key:
     file: ${SCREENER_KEY_FILE:?Set SCREENER_KEY_FILE to a private host key file outside the project and data volume}
+  screener_database_url:
+    file: ${DATABASE_URL_FILE:?Set DATABASE_URL_FILE to a private PostgreSQL connection file}
+  screener_auth:
+    file: ${AUTH_CONFIG_FILE:?Set AUTH_CONFIG_FILE to a private authentication JSON configuration file}
+  postgres_admin_password:
+    file: ${POSTGRES_ADMIN_PASSWORD_FILE:?Set POSTGRES_ADMIN_PASSWORD_FILE to a private initialization password file}
+  postgres_app_password:
+    file: ${POSTGRES_APP_PASSWORD_FILE:?Set POSTGRES_APP_PASSWORD_FILE to the private cv_app password file}

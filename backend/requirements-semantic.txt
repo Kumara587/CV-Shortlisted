@@ -1,2 +1,0 @@
--r requirements-runtime.txt
-sentence-transformers==6.2.0

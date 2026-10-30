@@ -4,7 +4,7 @@ import re
 from typing import Literal
 
 from starlette.concurrency import run_in_threadpool
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -20,17 +20,13 @@ class Skill(StrictModel):
     name: Text
     must: bool = False
 
-class ExtractedCriterion(StrictModel):
-    id: Annotated[str,StringConstraints(min_length=1,max_length=64)]
-    text: Annotated[str,StringConstraints(strip_whitespace=True,min_length=1,max_length=1000)]
-    category: Literal['skill','education','experience','responsibility','language','other'] = 'other'
-    importance: Literal['required','preferred','review'] = 'review'
-    source_quote: str = Field(default='',max_length=1000)
-    source_line: int = Field(default=1,ge=1,le=20000)
+from llm_contracts import Criterion as ExtractedCriterion, prohibited_criterion
+import llm_service
 
 class Requirements(StrictModel):
     skills: list[Skill] = Field(default_factory=list, max_length=100)
     criteria: list[ExtractedCriterion] = Field(default_factory=list,max_length=100)
+    extraction_receipt: str | None = Field(default=None,max_length=20000)
     minimum_years: float | None = Field(default=None, ge=0, le=60, allow_inf_nan=False)
     education: Literal['', 'Diploma', 'Bachelor', 'Master', 'PhD'] = ''
 
@@ -38,7 +34,7 @@ class Requirements(StrictModel):
     def unique_skills(self):
         if any(prohibited_requirement(s.name) for s in self.skills):
             raise ValueError('Requirements must describe job qualifications, not protected or personal attributes')
-        if any(prohibited_requirement(c.text) for c in self.criteria):
+        if any(prohibited_criterion(c) for c in self.criteria):
             raise ValueError('Criteria must describe job qualifications, not protected or personal attributes')
         if len({c.id for c in self.criteria})!=len(self.criteria):
             raise ValueError('Criterion IDs must be unique')
@@ -48,11 +44,12 @@ class Requirements(StrictModel):
         return self
 
 class ExtractionRequest(StrictModel):
+    synthetic_data_confirmed: bool = False
     job_description: Annotated[str, StringConstraints(strip_whitespace=True, min_length=20, max_length=20000)]
 
 class ExtractionResponse(StrictModel):
     requirements: Requirements
-    method: Literal['local_semantic_extraction','source_based_extraction']
+    method: Literal['source_based_extraction']
     warnings: list[str]
 
 from extraction import extract_document
@@ -69,12 +66,48 @@ async def validation_error(request, exc):
 
 @router.get('/health')
 async def health():
-    return {'status': 'ok', 'version': '0.7.0', 'features': ['saved_jobs', 'screening_history', 'encrypted_storage', 'source_grounded_extraction']}
+    return {'status': 'ok', 'version': '0.9.0', 'features': ['saved_jobs', 'screening_history', 'encrypted_storage', 'source_grounded_extraction','llm_evidence_evaluation']}
 
 @router.post('/api/requirements/extract', response_model=ExtractionResponse)
 async def extract_requirements(body: ExtractionRequest):
-    result=await run_in_threadpool(extract_document,body.job_description,True)
+    result=await run_in_threadpool(extract_document,body.job_description)
     return ExtractionResponse(**result)
+
+def criteria_fingerprint(criteria):
+    import hashlib
+    import json
+    return hashlib.sha256(json.dumps([c.model_dump() for c in criteria],sort_keys=True).encode()).hexdigest()
+
+
+def verify_extraction_receipt(requirements,request):
+    if not requirements.extraction_receipt: return {'status':'manual_or_legacy_criteria'}
+    try:
+        import json
+        raw=request.app.state.store.unseal(requirements.extraction_receipt,'ai','extraction',request.state.user_id,'v1')
+        receipt=json.loads(raw)
+        return {'status':'verified' if receipt['criteria_sha256']==criteria_fingerprint(requirements.criteria) else 'reviewed_edits',
+                'original_versions':receipt['versions']}
+    except Exception:
+        return {'status':'unverified_receipt'}
+
+
+@router.post('/api/ai/requirements/extract')
+async def extract_ai_requirements(body: ExtractionRequest,request: Request):
+    try: llm_service.require_data_confirmation(body.synthetic_data_confirmed)
+    except llm_service.AIInputError as exc: raise HTTPException(422,detail={'code':'ai_input','message':str(exc)})
+    if match_slots.locked(): raise HTTPException(429,'AI evaluation is busy. Retry shortly.')
+    async with match_slots:
+        try: result=await run_in_threadpool(llm_service.extract_job,body.job_description)
+        except llm_service.AIUnavailable as exc: raise HTTPException(503,detail={'code':'ai_unavailable','message':str(exc)})
+        except llm_service.AIInputError as exc: raise HTTPException(422,detail={'code':'ai_input','message':str(exc)})
+    import json
+    requirements=Requirements(**result['requirements'])
+    requirements.extraction_receipt=request.app.state.store.seal(json.dumps({
+        'criteria_sha256':criteria_fingerprint(requirements.criteria),'versions':result['versions']}),
+        'ai','extraction',request.state.user_id,'v1')
+    result['requirements']=requirements.model_dump()
+    return result
+
 
 @router.post('/api/requirements/validate', response_model=Requirements)
 async def validate_requirements(body: Requirements):
@@ -146,6 +179,7 @@ class CandidateInput(StrictModel):
     warnings: list[Annotated[str, StringConstraints(max_length=500)]] = Field(default_factory=list, max_length=10)
 
 class MatchRequest(StrictModel):
+    synthetic_data_confirmed: bool = False
     job_id: Annotated[str, StringConstraints(pattern=r'^job_[A-Za-z0-9_-]+$',max_length=64)] | None = None
     requirements: Requirements
     reviewed: Literal[True]
@@ -159,6 +193,17 @@ class MatchRequest(StrictModel):
 
 @router.post('/api/shortlist/match')
 async def match_shortlist(body: MatchRequest, request: Request):
+    return await execute_match(body,request,False)
+
+
+@router.post('/api/ai/shortlist/match')
+async def match_ai_shortlist(body: MatchRequest,request: Request):
+    try: llm_service.require_data_confirmation(body.synthetic_data_confirmed)
+    except llm_service.AIInputError as exc: raise HTTPException(422,detail={'code':'ai_input','message':str(exc)})
+    return await execute_match(body,request,True)
+
+
+async def execute_match(body,request,ai):
     store=request.app.state.store
     job_workspace=None
     if body.job_id:
@@ -167,7 +212,13 @@ async def match_shortlist(body: MatchRequest, request: Request):
     if match_slots.locked():
         raise HTTPException(429, 'Matching is busy. Retry shortly.')
     async with match_slots:
-        result=await run_in_threadpool(rank_candidates, body.requirements, body.candidates, semantic=True)
+        if ai:
+            try: result=await run_in_threadpool(llm_service.evaluate,body.requirements,body.candidates)
+            except llm_service.AIUnavailable as exc: raise HTTPException(503,detail={'code':'ai_unavailable','message':str(exc)})
+            except llm_service.AIInputError as exc: raise HTTPException(422,detail={'code':'ai_input','message':str(exc)})
+            result['versions']['extraction_provenance']=verify_extraction_receipt(body.requirements,request)
+        else:
+            result=await run_in_threadpool(rank_candidates, body.requirements, body.candidates)
     if body.job_id:
         try:
             snapshot=store.save_run(request.state.user_id,body.job_id,body.requirements.model_dump(),
@@ -184,7 +235,7 @@ async def match_shortlist(body: MatchRequest, request: Request):
 from contextlib import asynccontextmanager
 from fastapi.responses import Response
 from security import Settings, install_security
-from store import Store, MissingSnapshot
+from store import Store, MissingSnapshot, open_store
 from exporting import export_csv
 from library import LibraryLimit
 
@@ -253,7 +304,7 @@ async def delete_run(run_id: str,request: Request):
 
 @router.get('/api/session')
 async def session(request: Request):
-    return {'authenticated':True,'retention_seconds':request.app.state.settings.ttl}
+    return {'authenticated':True,'retention_seconds':request.app.state.settings.ttl,'ai_configured':llm_service.configured(),'database':request.app.state.store.dialect,'user':request.app.state.store.auth_profile(request.state.user_id)}
 
 class ReviewUpdate(StrictModel):
     candidate_id: Annotated[str, StringConstraints(min_length=1,max_length=64,pattern=r'^[A-Za-z0-9_-]+$')]
@@ -285,13 +336,6 @@ async def delete_all_snapshots(request: Request):
 @asynccontextmanager
 async def lifecycle(api):
     api.state.store.purge()
-    # Warm the local model before accepting requests, outside the event loop.
-    from semantic import local_model
-    try:
-        await run_in_threadpool(local_model)
-    except Exception:
-        from security import log
-        log.warning('event=semantic_unavailable route=maintenance')
     async def cleanup():
         while True:
             await asyncio.sleep(30)
@@ -308,11 +352,13 @@ async def lifecycle(api):
 
 def create_app(store=None,settings=None):
     settings=settings or Settings.environment()
-    store=store or Store(Path(os.getenv('SCREENER_DATA_DIR',str(Path(__file__).parent/'data')))/'screener.sqlite3',settings.ttl)
-    api=FastAPI(title='Resume Screener API',version='0.7.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifecycle)
+    store=store or open_store(settings.ttl)
+    api=FastAPI(title='Resume Screener API',version='0.9.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifecycle)
     api.state.store=store
     api.state.settings=settings
     api.include_router(router)
+    from auth import router as auth_router
+    api.include_router(auth_router)
     api.add_exception_handler(RequestValidationError,validation_error)
     install_security(api,store,settings)
     return api

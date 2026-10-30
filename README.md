@@ -1,5 +1,19 @@
 # CV-Shortlisted
 
+The frontend now uses email/password accounts and HttpOnly cookie sessions.
+See [authentication setup](deploy/AUTH.md) for Google sign-in, SMTP password
+recovery, and attaching email login to an existing recruiter's saved workspace.
+Google OAuth/SMTP require your own configuration; local email signup/login work
+without them. No access token is entered or stored by the frontend.
+
+PostgreSQL is now the configured local database. See [PostgreSQL setup, migration and recovery](deploy/POSTGRESQL.md). Users, encrypted parsed CV text, jobs, screening history, reviews and exports use the same storage service. SQLite is retained only for migration/compatibility and the untouched rollback source.
+
+The current UI uses the LLM extraction/evaluation service described in
+[LLM setup and validation](deploy/LLM.md) and [Gemini sample-data setup](deploy/GEMINI.md). Without a configured AI provider it shows
+**AI evaluation unavailable** and creates no substitute keyword score. Existing
+parsing, encrypted storage and saved history remain available. The earlier
+keyword/embedding endpoints are legacy APIs for compatibility and old history.
+
 ## VS Code PowerShell activation error
 
 The workspace selects `backend/.venv/Scripts/python.exe` directly and disables
@@ -37,43 +51,11 @@ Save the access token printed by `create-user`; it is shown only once.
 If `python` is also unavailable, install Python 3.11 and enable **Add Python to
 PATH**, then open a new PowerShell window before retrying.
 
-## Local AI semantic matching
+## Hosted AI
 
-The matching endpoint now combines explicit skill evidence with local Sentence
-Transformers embeddings (`all-MiniLM-L6-v2`). Candidate text is processed locally;
-no hosted AI API or API key is used. Job-description extraction preserves source clauses and uses local AI for clause classification when the model is available; see the extraction section below.
-
-Install and download the model once from the project root:
-
-```powershell
-cd backend
-.\.venv\Scripts\python.exe -m pip install -r requirements-semantic.txt
-.\.venv\Scripts\python.exe setup_semantic.py
-```
-
-Restart the backend after setup. Model files stay in `backend/models/` (gitignored).
-`SEMANTIC_MODEL_PATH` can point to another local Sentence Transformers model folder.
-Runtime loads local files only; model downloads happen only during setup.
-
-Explicit skills earn full credit. Previously unevidenced skills with cosine
-similarity >= 0.60 receive `semantic_review` status and half credit, with original
-source-line evidence. This threshold is an initial heuristic, not a validated
-hiring metric or probability. Negated, uncertain and labeled demographic lines
-are excluded from semantic evidence. Semantic matches never clear must-have
-verification flags. Experience and education continue using explicit evidence.
-The UI shows semantic evidence and similarity; CSV retains these skills under
-missing/uncertain until human review. Human review does not change evidence scores.
-
-Inference examines at most 256 text windows per CV. Longer resumes may have
-unexamined semantic evidence. The supplied model targets English; Sinhala/Tamil
-and domain-specific accuracy require separate evaluation. If loading or inference
-fails, matching falls back to explicit evidence with a visible warning.
-
-Run tests with `.\.venv\Scripts\python.exe -m pytest -q` from `backend`.
-Docker deployments must install `requirements-semantic.txt` and provision the
-model as well; the existing lightweight container uses explicit matching otherwise.
-
-Library reference: https://www.sbert.net/docs/package_reference/sentence_transformer/model.html
+Gemini is the only current AI provider. No Ollama runtime, Sentence Transformers,
+PyTorch or downloaded embedding model is required. See [Gemini configuration](deploy/GEMINI.md).
+Legacy explicit matching remains available only for compatibility, without local AI.
 
 ## Saved jobs, CV text and screening history
 
@@ -90,8 +72,8 @@ Library reference: https://www.sbert.net/docs/package_reference/sentence_transfo
 5. **Update saved job & CVs** updates current inputs without rewriting old runs.
    **New job** starts a separate workspace. Unsaved edits are not auto-saved.
 
-Storage uses the existing SQLite file (`backend/data/screener.sqlite3`, or
-`SCREENER_DATA_DIR`). New `jobs` and `screenings` tables are added automatically
+Storage uses the configured PostgreSQL database. `backend/data/screener.sqlite3`
+is the retained pre-migration source; it no longer receives live app changes after cutover. New `jobs` and `screenings` tables are added automatically
 without removing existing users or temporary snapshots. No database recreation,
 new packages or account recreation is required. Restart the backend and reload
 frontend after upgrading.
@@ -143,7 +125,7 @@ on separate protected storage and the passphrase in a password manager. Do not
 paste keys or recovery passwords into chat, source code or shell arguments.
 
 
-## Job-description requirements extraction
+## Legacy source-based requirements extraction
 
 The extractor no longer relies only on a fixed technology keyword list. It keeps
 source clauses for skills, qualifications, experience, language proficiency and

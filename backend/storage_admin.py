@@ -44,6 +44,13 @@ def read_backup(source,cipher):
 
 
 def migrate(store,backup_path):
+    if getattr(store,'dialect','sqlite')=='postgresql':
+        backup(store,backup_path)
+        with store.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            count=encrypt_existing(db,store.cipher)
+            verify_fields(db,store.cipher)
+            return count
     with store.connection(maintenance=True) as db:
         version=db.execute('PRAGMA data_version').fetchone()[0]
         backup_connection(db,store.cipher,backup_path)
@@ -60,6 +67,9 @@ def migrate(store,backup_path):
 
 
 def backup(store,destination):
+    if getattr(store,'dialect','sqlite')=='postgresql':
+        from postgres_admin import backup_postgres
+        return backup_postgres(store,destination)
     with store.connection() as db:
         verify_fields(db,store.cipher)
         backup_connection(db,store.cipher,destination)
@@ -71,6 +81,8 @@ def restore(source,destination,cipher):
         raise StorageSecurityError('Restore destination must be a new file; existing databases are never overwritten.')
     memory=read_backup(source,cipher)
     try:
+        from auth_store import AUTH_SCHEMA
+        memory.executescript(AUTH_SCHEMA)
         memory.execute('PRAGMA secure_delete=ON')
         verify_or_initialize(memory,cipher,maintenance=True)
         memory.commit()

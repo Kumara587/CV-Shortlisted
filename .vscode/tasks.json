@@ -27,6 +27,24 @@
       "presentation": {
         "reveal": "always",
         "panel": "dedicated"
+      },
+      "dependsOn": "PostgreSQL: start local"
+    },
+    {
+      "label": "PostgreSQL: start local",
+      "type": "process",
+      "command": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "args": [
+        "manage.py",
+        "start-postgres"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/backend"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated"
       }
     }
   ]

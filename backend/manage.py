@@ -5,20 +5,45 @@ import sqlite3
 from getpass import getpass
 from pathlib import Path
 from security import Settings
-from store import Store
+from store import Store, open_store
 from encryption import initialize_key, key_path, Cipher, StorageSecurityError, backup_key, restore_key
 from storage_admin import migrate, backup, restore
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('action',choices=['create-user','revoke-user','purge','init-encryption','migrate-encryption','verify-encryption','backup-data','restore-data','backup-key','restore-key'])
+    parser.add_argument('action',choices=['create-user','revoke-user','purge','init-encryption','migrate-encryption','verify-encryption','backup-data','restore-data','backup-key','restore-key','migrate-postgres','restore-postgres','start-postgres','stop-postgres'])
     parser.add_argument('name',nargs='?')
     parser.add_argument('--output',help='New encrypted backup or restored database path; never overwritten')
     parser.add_argument('--backup',help='Encrypted backup source for restore-data')
+    parser.add_argument('--source',help='Existing encrypted SQLite database to migrate')
+    parser.add_argument('--target-url-file',help='Private PostgreSQL connection file; never printed')
+    parser.add_argument('--activate',action='store_true',help='Switch local default only after verified migration')
     args=parser.parse_args()
     settings=Settings.environment()
-    store=Store(Path(os.getenv('SCREENER_DATA_DIR',str(Path(__file__).parent/'data')))/'screener.sqlite3',settings.ttl)
-    if args.action=='init-encryption':
+    store=open_store(settings.ttl)
+    if args.action in {'start-postgres','stop-postgres'}:
+        from local_postgres import control
+        try: print(control('start' if args.action=='start-postgres' else 'stop'))
+        except StorageSecurityError as exc:parser.exit(1,str(exc)+'\n')
+    elif args.action in {'migrate-postgres','restore-postgres'}:
+        try:
+            if not args.target_url_file:parser.error('PostgreSQL operations require --target-url-file')
+            from postgres_store import PostgresStore
+            from postgres_admin import migrate_sqlite,restore_postgres,activate_connection
+            target=PostgresStore(Path(args.target_url_file).read_text().strip(),settings.ttl)
+            if args.action=='migrate-postgres':
+                if not args.source or not args.output:parser.error('Migration requires --source and --output for an encrypted recovery backup')
+                counts=migrate_sqlite(args.source,target,args.output)
+            else:
+                if not args.backup:parser.error('Restore requires --backup')
+                counts=restore_postgres(args.backup,target)
+            print('Verified table counts:',counts)
+            if args.activate:
+                path=activate_connection(args.target_url_file)
+                print('Local PostgreSQL default activated. Credentials remain private in:',path)
+        except (StorageSecurityError,OSError,sqlite3.Error):
+            parser.exit(1,'PostgreSQL migration/restore failed safely. Check server, key, target emptiness and private connection settings. SQLite was not deleted.\n')
+    elif args.action=='init-encryption':
         try:
             path=initialize_key()
             print('Encryption key created outside the database. Keep a separate protected backup of:',path)

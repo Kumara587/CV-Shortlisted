@@ -1,24 +1,30 @@
 const configured = import.meta.env.VITE_API_BASE_URL || '';
-const base = (configured || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://127.0.0.1:8000' : window.location.origin)).replace(/\/$/, '');
-let accessToken = '';
+const base = (configured || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? `${window.location.protocol}//${window.location.hostname}:8000` : window.location.origin)).replace(/\/$/, '');
 function safeEndpoint() {
   const url = new URL(base, window.location.href);
   const local = ['127.0.0.1','localhost','[::1]'].includes(url.hostname);
   if (url.username || url.password || url.search || url.hash || (url.protocol !== 'https:' && !(local && url.protocol === 'http:'))) throw new Error('Use HTTPS or a local API address.');
   if (!local && url.origin !== window.location.origin) throw new Error('Candidate data requires the same secure site. Cross-site processing is not enabled.');
 }
-export function clearAccessToken() { accessToken = ''; }
 async function call(path, options={}) {
   safeEndpoint();
-  if (!accessToken) throw new Error('Sign in with your access token first.');
   const controller=new AbortController(),forward=()=>controller.abort();
   if(options.signal?.aborted)controller.abort();else options.signal?.addEventListener('abort',forward,{once:true});
-  const timer=setTimeout(()=>controller.abort(),30000);
+  const timer=setTimeout(()=>controller.abort(),path.startsWith('/api/ai/')?170000:30000);
   let response;
-  try{response=await fetch(`${base}${path}`, {...options,signal:controller.signal,headers:{...options.headers,Authorization:`Bearer ${accessToken}`},cache:'no-store',credentials:'omit',redirect:'error'});}
+  try{response=await fetch(`${base}${path}`, {...options,signal:controller.signal,headers:{...options.headers,'X-CSRF-Protection':'1'},cache:'no-store',credentials:'include',redirect:'error'});}
   finally{clearTimeout(timer);options.signal?.removeEventListener('abort',forward);}
   if (!response.ok) {
-    if (response.status === 401) throw new Error('Access token is invalid or revoked. Sign in again.');
+    if(path.startsWith('/api/auth/')){
+      const payload=await response.json().catch(()=>({}));
+      throw new Error(typeof payload.detail==='string'?payload.detail:response.status===422?'Check your account details, date of birth and matching passwords. Use 8+ characters with uppercase, lowercase, a number and a special character.':`Authentication failed (${response.status}). Please retry.`);
+    }
+    if(path.startsWith('/api/ai/')){
+      const payload=await response.json().catch(()=>({}));
+      if(response.status===503)throw new Error(payload.detail?.message || 'AI evaluation unavailable. Check provider configuration. No keyword score was substituted.');
+      if(response.status===422&&payload.detail?.code==='ai_input')throw new Error(payload.detail.message);
+    }
+    if (response.status === 401) throw new Error('Your session has expired. Sign in again.');
     if (response.status === 404) {
       if(path==='/api/jobs')throw new Error('Saved jobs API is unavailable. Restart the backend to load the latest project code, then retry.');
       throw new Error('Record not found, deleted or expired. Refresh saved jobs or match again.');
@@ -31,18 +37,16 @@ async function call(path, options={}) {
   }
   return response;
 }
-export async function signIn(token) {
-  accessToken = token.trim();
-  try { return await (await call('/api/session')).json(); }
-  catch(e) {accessToken='';throw e;}
-}
+export async function authConfig(){return (await call('/api/auth/config')).json();}
+export async function currentSession(){return (await call('/api/session')).json();}
+export async function authAction(action,body={}){return request(`/api/auth/${action}`,body);}
 export async function request(path, body, signal) {
   return (await call(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal})).json();
 }
 export async function parseResume(file,signal) {
   return (await call('/api/resumes/parse',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream','X-Filename':encodeURIComponent(file.name)},body:file,signal})).json();
 }
-export function matchShortlist(body,signal) {return request('/api/shortlist/match',body,signal);}
+export function matchShortlist(body,signal) {return request('/api/ai/shortlist/match',body,signal);}
 export async function listJobs(){return (await call('/api/jobs')).json();}
 export async function getJob(id){return (await call(`/api/jobs/${encodeURIComponent(id)}`)).json();}
 export async function persistJob(id,body){return (await call(id?`/api/jobs/${encodeURIComponent(id)}`:'/api/jobs',{

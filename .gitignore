@@ -12,3 +12,6 @@ backend/models/
 *.keys.json
 *.cvbackup
 *.keybackup
+*.url
+*.credentials.json
+backend/pgdata/

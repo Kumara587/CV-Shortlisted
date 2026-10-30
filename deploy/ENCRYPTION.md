@@ -1,5 +1,7 @@
 # CV storage encryption and recovery
 
+PostgreSQL is the current live database. Sensitive field encryption and the same key still apply. Use [POSTGRESQL.md](POSTGRESQL.md) for PostgreSQL data backup/restore; the SQLite file restoration steps below are retained for SQLite recovery sources.
+
 ## What is protected
 
 `jobs.title`, `jobs.workspace`, `screenings.document`, `screenings.export_rows`

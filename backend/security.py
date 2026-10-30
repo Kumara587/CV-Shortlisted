@@ -7,10 +7,12 @@ import os
 import re
 import time
 from urllib.parse import urlsplit
+from http.cookies import SimpleCookie,CookieError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
 log=logging.getLogger('screener.security')
+PUBLIC_AUTH={'/api/auth/config','/api/auth/signup','/api/auth/login','/api/auth/logout','/api/auth/forgot-password','/api/auth/reset-password','/api/auth/resend-verification','/api/auth/verify-email','/api/auth/google/nonce','/api/auth/google'}
 
 @dataclass(frozen=True)
 class Settings:
@@ -40,6 +42,8 @@ class Settings:
 
 
 def route_key(path):
+    if path in PUBLIC_AUTH:return path
+    if path in {'/api/ai/requirements/extract','/api/ai/shortlist/match'}: return path
     if path=='/api/jobs': return '/api/jobs'
     if re.fullmatch(r'/api/jobs/[A-Za-z0-9_-]+/runs',path): return '/api/jobs/:id/runs'
     if re.fullmatch(r'/api/jobs/[A-Za-z0-9_-]+',path): return '/api/jobs/:id'
@@ -100,18 +104,29 @@ class SecurityMiddleware:
         # /health contains no data, but still has a bounded per-IP request rate.
         ip=(scope.get('client') or ('unknown',0))[0]
         if not self.limiter.allow(('ip',ip),180): return await reject(429,'Request rate exceeded')
-        if scope['path']!='/health':
+        public_auth=scope['path'] in PUBLIC_AUTH
+        cookies=SimpleCookie()
+        try:cookies.load(headers.get(b'cookie',b'').decode('latin1'))
+        except CookieError:return await reject(400,'Invalid cookies')
+        session=cookies.get('cv_session')
+        if (public_auth or session) and scope['method'] not in {'GET','HEAD','OPTIONS'}:
+            if not origin or headers.get(b'x-csrf-protection')!=b'1':return await reject(403,'Reload the app before continuing. Origin and CSRF protection are required.')
+        if public_auth:
+            auth_limit=60 if scope['path']=='/api/auth/config' else 10
+            if not self.limiter.allow(('public-auth',ip,scope['path']),auth_limit):return await reject(429,'Too many authentication attempts. Wait one minute.')
+        if scope['path']!='/health' and not public_auth:
             auth=headers.get(b'authorization',b'').decode('latin1')
             if not self.limiter.allow(('auth',ip),120): return await reject(429,'Authentication request limit exceeded')
-            if not auth.startswith('Bearer '): return await reject(401,'Authentication required')
-            try: owner=self.store.authenticate(auth[7:])
+            try:
+                owner=self.store.authenticate_session(session.value) if session else None
+                if not owner and auth.startswith('Bearer '):owner=self.store.authenticate(auth[7:])
             except Exception: return await reject(503,'Authentication temporarily unavailable')
-            if not owner: return await reject(401,'Invalid or revoked access token')
+            if not owner: return await reject(401,'Sign in to continue. Your session may have expired.')
             scope.setdefault('state',{})['user_id']=owner
-            limit=10 if route=='/api/resumes/parse' else 20 if route in {'/api/shortlist/match','/api/shortlists/:id/export'} else 120
+            limit=10 if route=='/api/resumes/parse' else 20 if route in {'/api/shortlist/match','/api/shortlists/:id/export','/api/ai/requirements/extract','/api/ai/shortlist/match'} else 120
             if not self.limiter.allow(('owner',owner),120) or not self.limiter.allow(('route',owner,route),limit):
                 return await reject(429,'Request rate exceeded')
-        body_limit=5*1024*1024 if route=='/api/resumes/parse' else 10*1024*1024 if route in {'/api/shortlist/match','/api/jobs','/api/jobs/:id'} else 100*1024
+        body_limit=5*1024*1024 if route=='/api/resumes/parse' else 10*1024*1024 if route in {'/api/shortlist/match','/api/ai/shortlist/match','/api/jobs','/api/jobs/:id'} else 100*1024
         lengths=[v for k,v in scope.get('headers',[]) if k.lower()==b'content-length']
         if len(lengths)>1 or (lengths and (not lengths[0].isdigit() or len(lengths[0])>10)):
             return await reject(400,'Invalid content length')
@@ -155,4 +170,4 @@ class SecurityMiddleware:
 def install_security(app,store,settings):
     app.add_middleware(SecurityMiddleware,store=store,settings=settings)
     # CORS wraps security responses, including 401/403, but exposes only CSV filename.
-    app.add_middleware(CORSMiddleware,allow_origins=list(settings.origins),allow_credentials=False,allow_methods=['GET','POST','PATCH','DELETE'],allow_headers=['Authorization','Content-Type','X-Filename'],expose_headers=['Content-Disposition'],max_age=600)
+    app.add_middleware(CORSMiddleware,allow_origins=list(settings.origins),allow_credentials=True,allow_methods=['GET','POST','PATCH','DELETE'],allow_headers=['Authorization','Content-Type','X-Filename','X-CSRF-Protection'],expose_headers=['Content-Disposition'],max_age=600)

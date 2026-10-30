@@ -15,6 +15,7 @@
 .library-row > span {flex: 1; min-width: 150px;}
 .library-row summary {cursor: pointer; color: #92400e;}
 .skill-control {display:inline-flex;align-items:center;gap:2px;max-width:100%;}
+.quick-criteria{margin:18px 0}.quick-criteria .skills{margin:14px 0 18px}.quick-criteria .chip{white-space:normal;text-align:left;line-height:1.5;max-width:100%;padding:9px 14px;border-radius:24px}.quick-criteria .chip.must{background:#f1e8ff;border-color:#a878f0;color:#6021aa}.quick-criteria .skill-control{border:1px solid #eee7fa;border-radius:24px;padding-right:6px}.quick-criteria form input{border:1px solid #e6ddf6;border-radius:14px;padding:12px 14px}.quick-criteria .remove-skill{padding:4px 7px}
 .remove-skill {color:#64748b;padding:3px 5px;font-size:18px;}
 .extracted-criteria {margin:20px 0;border:1px solid #ddd6fe;border-radius:10px;padding:12px;}
 .extracted-criteria>summary {font-weight:650;cursor:pointer;}

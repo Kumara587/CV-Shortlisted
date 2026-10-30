@@ -6,13 +6,16 @@ import os
 from pathlib import Path
 import secrets
 import sqlite3
+import stat
 import time
 from library import Library, SCHEMA
 from encryption import Cipher, verify_or_initialize
+from auth_store import AuthRepository,AUTH_SCHEMA
 
 class MissingSnapshot(Exception): pass
 
-class Store(Library):
+class Store(Library,AuthRepository):
+    dialect='sqlite'
     def __init__(self, path, ttl=3600, clock=time.time, cipher=None):
         self.path=Path(path)
         self.ttl=ttl
@@ -50,6 +53,7 @@ class Store(Library):
             CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES users(id), expires REAL NOT NULL, payload TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS snapshots_owner ON snapshots(owner);''')
             db.executescript(SCHEMA)
+            db.executescript(AUTH_SCHEMA)
             verify_or_initialize(db,cipher,maintenance)
             db.commit()
             yield db
@@ -89,6 +93,8 @@ class Store(Library):
 
     def purge(self):
         with self.connection() as db:
+            db.execute('DELETE FROM auth_sessions WHERE expires<=?',(self.clock(),))
+            db.execute('DELETE FROM auth_tokens WHERE expires<=?',(self.clock(),))
             return db.execute('DELETE FROM snapshots WHERE expires<=?',(self.clock(),)).rowcount
 
     def save(self,owner,results,labels):
@@ -133,3 +139,38 @@ class Store(Library):
             count=db.execute('DELETE FROM snapshots WHERE id=? AND owner=?',(snapshot,owner)).rowcount
             if not count: raise MissingSnapshot()
             return count
+
+
+def default_database_file():
+    root=Path(os.getenv('LOCALAPPDATA',str(Path.home()/'.config')))
+    return root/'CVShortlisted'/'secrets'/'database.url'
+
+
+def database_url():
+    from encryption import StorageSecurityError
+    if 'DATABASE_URL' in os.environ:
+        return os.environ['DATABASE_URL'].strip()
+    configured=os.getenv('DATABASE_URL_FILE')
+    if 'DATABASE_URL_FILE' in os.environ and not configured:
+        raise StorageSecurityError('Database connection file path is empty.')
+    path=Path(configured) if configured else default_database_file()
+    if 'DATABASE_URL_FILE' in os.environ or path.exists():
+        try:
+            if os.name!='nt' and stat.S_IMODE(path.stat().st_mode)&0o077:
+                raise StorageSecurityError('Database connection file must be private (chmod 600).')
+            return path.read_text(encoding='utf-8').strip()
+        except OSError:raise StorageSecurityError('Private database connection file cannot be read.') from None
+    return None
+
+
+def open_store(ttl=3600):
+    from encryption import StorageSecurityError
+    url=database_url()
+    if url is not None:
+        if not url.startswith(('postgresql://','postgres://')):
+            raise StorageSecurityError('Configured database URL must use PostgreSQL; it was not printed.')
+        from postgres_store import PostgresStore
+        return PostgresStore(url,ttl)
+    if os.getenv('APP_ENV')=='production':
+        raise StorageSecurityError('Production requires DATABASE_URL_FILE or DATABASE_URL for PostgreSQL.')
+    return Store(Path(os.getenv('SCREENER_DATA_DIR',str(Path(__file__).parent/'data')))/'screener.sqlite3',ttl)
