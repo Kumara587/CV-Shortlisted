@@ -64,11 +64,28 @@ def backup_postgres(store,destination):
         db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
         verify_fields(db,store.cipher)
         data=rows(db)
+    write_backup(data,store.cipher,destination)
+
+
+def write_backup(data,cipher,destination):
     payload=json.dumps({'format':'cv-postgres-v1','tables':data},ensure_ascii=True).encode()
-    encrypted=MAGIC+store.cipher.encrypt_bytes(payload)
+    encrypted=MAGIC+cipher.encrypt_bytes(payload)
     private_write(destination,encrypted)
-    if load_backup(destination,store.cipher)!=data:
+    if load_backup(destination,cipher)!=data:
         raise StorageSecurityError('Written PostgreSQL backup failed verification.')
+
+
+def migrate_postgres(source,target,backup_path):
+    """Freeze cooperating writers; back up and verify an exact ciphertext copy."""
+    if source.url==target.url:raise StorageSecurityError('Source and target must differ.')
+    with source.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        verify_fields(db,source.cipher)
+        data=rows(db)
+        write_backup(data,source.cipher,backup_path)
+        counts=import_rows(target,data)
+        if rows(db)!=data:raise StorageSecurityError('Source changed during migration; activation was not performed.')
+        return counts
 
 
 def load_backup(path,cipher):
