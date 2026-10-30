@@ -21,6 +21,7 @@ def prepare_environment():
     os.environ.setdefault('PARSER_CONCURRENCY','1')
     os.environ.setdefault('AUTH_CONCURRENCY','1')
     os.environ.setdefault('CLEANUP_INTERVAL_SECONDS','0')
+    os.environ.setdefault('SCREENER_SCHEMA_MODE','verify-only')
     os.environ.setdefault('XDG_CONFIG_HOME','/tmp/cv-caddy/config')
     os.environ.setdefault('XDG_DATA_HOME','/tmp/cv-caddy/data')
     root=Path(tempfile.mkdtemp(prefix='cv-runtime-'))

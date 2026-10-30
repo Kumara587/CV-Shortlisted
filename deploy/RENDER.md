@@ -33,6 +33,9 @@ Defaults are one parser, one password-hashing operation and one model evaluation
 at a time. Periodic database cleanup is disabled so Neon can suspend; expiry is
 still checked on reads and on new sessions. Startup performs expired-row cleanup.
 The app runs one API worker with the existing process-local request limiter.
+Render uses a dedicated non-superuser database role and verifies the pre-migrated
+schema without attempting DDL (`SCREENER_SCHEMA_MODE=verify-only`). Apply future
+schema migrations using the separate private administrator connection first.
 
 ## Current limitations before real applicant use
 
