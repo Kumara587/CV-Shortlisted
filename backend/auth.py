@@ -23,7 +23,7 @@ COOKIE='cv_session'
 NONCE_COOKIE='cv_google_nonce'
 hasher=PasswordHasher(time_cost=3,memory_cost=65536,parallelism=1)
 DUMMY_HASH=hasher.hash('dummy-password-never-an-account')
-slots=asyncio.Semaphore(2)
+slots=asyncio.Semaphore(max(1,min(2,int(os.getenv('AUTH_CONCURRENCY','2')))))
 GENERIC_RESET='If an eligible account exists, a password reset link will be sent to that email.'
 
 
