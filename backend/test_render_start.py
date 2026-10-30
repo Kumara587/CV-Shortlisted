@@ -3,10 +3,20 @@ import os
 from pathlib import Path
 import shutil
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch,MagicMock
 from render_start import prepare_environment
 
 class RenderStartupTests(unittest.TestCase):
+    def test_runtime_schema_mode_does_not_execute_ddl(self):
+        from postgres_store import PostgresStore
+        store=PostgresStore('postgresql://fictional',cipher=object())
+        raw=MagicMock()
+        context=MagicMock();context.__enter__.return_value=raw
+        with patch.dict(os.environ,{'SCREENER_SCHEMA_MODE':'verify-only'}),patch.object(store,'_connect',return_value=context),patch('postgres_store.verify_or_initialize'):
+            store.initialize()
+        self.assertEqual(raw.execute.call_count,9)
+        self.assertFalse(any('CREATE' in str(call.args[0]) for call in raw.execute.call_args_list))
+
     def test_runtime_secret_files_and_same_origin_settings(self):
         values={'RENDER_EXTERNAL_HOSTNAME':'fictional-check.onrender.com','DATABASE_URL':'postgresql://fictional:fake@example.neon.tech/neondb',
             'SCREENER_STORAGE_KEY_JSON':json.dumps({'version':1,'keys':['fictional-key']}),
