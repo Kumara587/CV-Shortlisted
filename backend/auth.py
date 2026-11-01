@@ -37,8 +37,10 @@ def configuration():
     except (OSError,ValueError):raise HTTPException(503,'Authentication configuration is unavailable.') from None
 
 
-def google_client():return str(configuration().get('google_client_id','')).strip()
+def basic_auth():return os.getenv('AUTH_MODE','standard')=='basic'
+def google_client():return '' if basic_auth() else str(configuration().get('google_client_id','')).strip()
 def mail_ready():
+    if basic_auth():return False
     c=configuration()
     return bool(c.get('smtp_host') and c.get('smtp_from') and c.get('app_url'))
 
@@ -145,12 +147,13 @@ def send_email(email,token,purpose,allowed_origins):
 
 @router.get('/config')
 def config():
-    return {'google_client_id':google_client(),'password_reset_available':mail_ready()}
+    return {'google_client_id':google_client(),'password_reset_available':mail_ready(),
+            'email_verification_required':not basic_auth()}
 
 
 @router.post('/signup')
 async def signup(body:Signup,request:Request,response:Response):
-    if request.app.state.settings.production and not mail_ready():raise HTTPException(503,'Email verification must be configured before public registration.')
+    if not basic_auth() and request.app.state.settings.production and not mail_ready():raise HTTPException(503,'Email verification must be configured before public registration.')
     async with slots:
         encoded=await run_in_threadpool(password_hash,body.password)
         store=request.app.state.store
@@ -163,7 +166,7 @@ async def signup(body:Signup,request:Request,response:Response):
             except Exception:raise HTTPException(503,'Account created, but verification email delivery failed. Use Resend verification after email delivery is configured.') from None
             return {'verification_required':True,'message':'Check your inbox to verify your email, then sign in.'}
         result=establish(request,response,owner)
-        result['message']='Local development account created. Email verification will be required when email delivery is configured.'
+        result['message']='Account created.'
         return result
 
 
@@ -173,7 +176,7 @@ async def login(body:Login,request:Request,response:Response):
         account=await run_in_threadpool(request.app.state.store.auth_account,body.email)
         valid=await run_in_threadpool(password_matches,account['password_hash'] if account else None,body.password)
         if not valid or not account or not account['active']:raise HTTPException(401,'Email or password is incorrect.')
-        if (request.app.state.settings.production or mail_ready()) and not account['email_verified']:
+        if not basic_auth() and (request.app.state.settings.production or mail_ready()) and not account['email_verified']:
             raise HTTPException(403,'Verify your email before signing in. You can resend the verification email below.')
         return await run_in_threadpool(establish,request,response,account['id'])
 
@@ -275,3 +278,4 @@ async def google_login(body:Google,request:Request,response:Response):
         profile=store.auth_profile(owner)
         if not profile['email_verified']:raise HTTPException(403,'Verify your email before signing in. Use Resend verification.')
         return establish(request,response,owner)
+
