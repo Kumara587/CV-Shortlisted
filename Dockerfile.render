@@ -15,6 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 libg
 COPY backend/requirements-runtime.txt ./
 RUN pip install --no-cache-dir -r requirements-runtime.txt && groupadd -g 10001 screener && useradd -u 10001 -g screener -s /usr/sbin/nologin screener
 COPY --from=proxy /usr/bin/caddy /usr/bin/caddy
+# Drop the upstream binary's file capabilities; Render disallows privileged
+# execution and our unprivileged listener only needs port 10000.
+RUN cp /usr/bin/caddy /usr/bin/caddy-unprivileged && mv /usr/bin/caddy-unprivileged /usr/bin/caddy
 COPY --from=frontend /build/dist /srv
 COPY backend/*.py ./
 COPY deploy/logging.json /app/logging.json
@@ -22,3 +25,4 @@ COPY deploy/Caddyfile.render /app/Caddyfile
 USER 10001:10001
 EXPOSE 10000
 CMD ["python", "render_start.py"]
+
