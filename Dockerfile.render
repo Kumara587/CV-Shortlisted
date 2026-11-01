@@ -23,6 +23,8 @@ COPY backend/*.py ./
 COPY deploy/logging.json /app/logging.json
 COPY deploy/Caddyfile.render /app/Caddyfile
 USER 10001:10001
+# Fail the Linux build if a valid PDF cannot be read under worker limits.
+RUN python -m unittest test_parse_worker
 EXPOSE 10000
 CMD ["python", "render_start.py"]
 
