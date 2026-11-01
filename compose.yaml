@@ -34,6 +34,7 @@ services:
       SCREENER_KEY_FILE: /run/secrets/screener_storage_key
       DATABASE_URL_FILE: /run/secrets/screener_database_url
       AUTH_CONFIG_FILE: /run/secrets/screener_auth
+      GEMINI_CONFIG_FILE: /run/secrets/screener_gemini
     depends_on:
       database:
         condition: service_healthy
@@ -50,6 +51,11 @@ services:
         mode: 0400
       - source: screener_auth
         target: screener_auth
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: screener_gemini
+        target: screener_gemini
         uid: "10001"
         gid: "10001"
         mode: 0400
@@ -114,6 +120,8 @@ secrets:
     file: ${DATABASE_URL_FILE:?Set DATABASE_URL_FILE to a private PostgreSQL connection file}
   screener_auth:
     file: ${AUTH_CONFIG_FILE:?Set AUTH_CONFIG_FILE to a private authentication JSON configuration file}
+  screener_gemini:
+    file: ${GEMINI_CONFIG_FILE:?Set GEMINI_CONFIG_FILE to a private Gemini configuration file}
   postgres_admin_password:
     file: ${POSTGRES_ADMIN_PASSWORD_FILE:?Set POSTGRES_ADMIN_PASSWORD_FILE to a private initialization password file}
   postgres_app_password:

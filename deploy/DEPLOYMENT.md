@@ -1,5 +1,16 @@
 # PostgreSQL deployment update
 
+Current account setup is documented in [AUTH.md](AUTH.md). The frontend uses
+email/password/Google cookie sessions, not administrator-issued tokens. The API
+now has outbound access for hosted Gemini, Google token verification and SMTP;
+no API or PostgreSQL port is published. Compose mounts the separate database,
+encryption, authentication and Gemini secret files. Current Gemini processing is
+sample-data only: this deployment configuration must not be presented as ready
+for real applicant AI processing without changing and validating that data policy.
+
+Free hosting assessment: [FREE_HOSTING.md](FREE_HOSTING.md). No cloud account,
+server or domain has been provisioned and no public deployment has been made.
+
 The active database is PostgreSQL. Follow [POSTGRESQL.md](POSTGRESQL.md) for database secrets, role initialization, verified cutover and recovery. The historical SQLite instructions below apply only to retained migration sources.
 
 # Deploy on a server you control

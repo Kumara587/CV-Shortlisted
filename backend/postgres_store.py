@@ -2,7 +2,9 @@
 from contextlib import contextmanager
 from threading import Lock
 import sqlite3
+import os
 import psycopg
+from urllib.parse import urlsplit
 from store import Store
 from encryption import verify_or_initialize, StorageSecurityError
 from auth_store import AUTH_SCHEMA
@@ -84,8 +86,12 @@ class PostgresStore(Store):
 
     def _connect(self):
         try:
+            tls={}
+            if (urlsplit(self.url).hostname or '').endswith('.neon.tech'):
+                import certifi
+                tls={'sslmode':'verify-full','sslrootcert':certifi.where()}
             raw=psycopg.connect(self.url,connect_timeout=5,application_name='cv-shortlisted',
-                options='-c statement_timeout=15000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=30000')
+                options='-c statement_timeout=15000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=30000',**tls)
             if self.search_path:
                 from psycopg import sql
                 raw.execute(sql.SQL('SET search_path TO {}').format(sql.Identifier(self.search_path)))
@@ -100,8 +106,15 @@ class PostgresStore(Store):
             cipher=self.cipher
             with self._connect() as raw:
                 raw.execute('SELECT pg_advisory_xact_lock(%s)',(LOCK_ID,))
-                for statement in (SCHEMA+AUTH_SCHEMA).split(';'):
-                    if statement.strip():raw.execute(statement)
+                mode=os.getenv('SCREENER_SCHEMA_MODE','create')
+                if mode=='verify-only':
+                    from psycopg import sql
+                    for table in ('users','jobs','screenings','snapshots','storage_meta','auth_accounts','auth_sessions','auth_tokens'):
+                        raw.execute(sql.SQL('SELECT 1 FROM {} LIMIT 0').format(sql.Identifier(table)))
+                elif mode=='create':
+                    for statement in (SCHEMA+AUTH_SCHEMA).split(';'):
+                        if statement.strip():raw.execute(statement)
+                else:raise ValueError('Invalid schema initialization mode')
                 verify_or_initialize(Connection(raw),cipher,maintenance,metadata_ready=True)
             self._initialized=True
 

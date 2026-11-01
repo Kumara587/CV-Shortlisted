@@ -122,7 +122,7 @@ from fastapi import Request, Header
 from urllib.parse import unquote
 from parsing import MAX_BYTES, failure, safe_name
 
-parse_slots = asyncio.Semaphore(2)
+parse_slots = asyncio.Semaphore(max(1,min(2,int(os.getenv('PARSER_CONCURRENCY','2')))))
 match_slots = asyncio.Semaphore(1)
 
 @router.post('/api/resumes/parse')
@@ -336,9 +336,16 @@ async def delete_all_snapshots(request: Request):
 @asynccontextmanager
 async def lifecycle(api):
     api.state.store.purge()
+    # Let serverless databases suspend when idle; expiry is also checked on reads.
+    default_interval='0' if '.neon.tech' in getattr(api.state.store,'url','') else '30'
+    interval=int(os.getenv('CLEANUP_INTERVAL_SECONDS',default_interval))
+    if interval==0:
+        yield
+        return
+    if not 30<=interval<=86400:raise ValueError('Cleanup interval must be 0 or 30..86400 seconds')
     async def cleanup():
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(interval)
             try: api.state.store.purge()
             except Exception:
                 from security import log
