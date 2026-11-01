@@ -1,5 +1,16 @@
 # Render Free pilot with Neon
 
+## Hosted instance
+
+- Public URL: https://cv-shortlisted.onrender.com
+- Render service: `srv-dbjd75mtlv9c73ct1ngg` (My Workspace, Singapore, Free)
+- Source branch: `codex/render-hosting`; automatic deploys are disabled.
+- Verified live deployment: `dep-dbjda5vb9u1s73dn3gvg` on 2026-11-01.
+- HTTPS homepage, health and auth configuration returned 200; unauthenticated
+  session returned 401. Google OAuth and password-reset email remain unconfigured.
+- The Caddy binary is copied to a fresh inode during the build to drop upstream
+  file capabilities, allowing execution under Render's restricted container runtime.
+
 The Render release uses `Dockerfile.render`, not the VPS Compose stack. It builds
 React assets and serves them with Caddy on `$PORT`, forwarding `/api/*` and
 `/health` to FastAPI on loopback only. Render terminates public TLS; the local
@@ -47,9 +58,13 @@ Gemini is still explicitly sample-data-only. Moving storage to Neon does not
 authorize sending real CVs to Gemini's unpaid API. Select/configure a suitable
 processor before real applicant AI processing.
 
-Production email signup/login requires verified email. Until email delivery is
-configured, public signup fails explicitly and unverified local accounts need
-verification before production password login. Configure Google OAuth's final
+The current pilot explicitly sets `AUTH_MODE=basic`: signup starts a session and
+existing password accounts can sign in without email verification. This does not
+mark email addresses as verified. Google, recovery and verification controls are
+hidden while unavailable. Password hashing, secure cookies and CSRF checks remain.
+Remove this override to restore standard email verification before enabling mail.
+In standard mode public signup requires email delivery and production password
+login requires verified email. Configure Google OAuth's final
 HTTPS JavaScript origin separately. Google sign-in does not silently attach to an
 existing password account by matching email.
 
@@ -76,3 +91,4 @@ After a deploy reaches `live`, check `/`, `/health`, `/api/auth/config` and an
 unauthenticated `/api/session` (must be 401). Verify the login page's CSP, no-store
 headers and secure cookie behavior. Any synthetic smoke account must be removed
 after verification; never print password, key, DB URL or applicant content.
+
