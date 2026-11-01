@@ -100,6 +100,27 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(self.post('forgot-password',{'email':'fictional@example.com'}).status_code,503)
         self.assertEqual(self.post('google/nonce').status_code,503)
 
+    def test_basic_production_signup_and_existing_unverified_login(self):
+        self.signup()
+        settings=Settings(production=True,origins=('https://workspace.example',),hosts=('workspace.example',))
+        headers={'Origin':'https://workspace.example','X-CSRF-Protection':'1'}
+        with patch.dict('os.environ',{'AUTH_MODE':'basic'}), TestClient(create_app(self.store,settings),base_url='https://workspace.example') as client:
+            config=client.get('/api/auth/config').json()
+            self.assertFalse(config['email_verification_required'])
+            self.assertFalse(config['password_reset_available'])
+            self.assertEqual(config['google_client_id'],'')
+            r=client.post('/api/auth/login',json={'email':'fictional@example.com','password':self.password},headers=headers)
+            self.assertEqual(r.status_code,200,r.text)
+            self.assertIn('Secure',r.headers['set-cookie'])
+            self.assertEqual(client.post('/api/auth/login',json={'email':'fictional@example.com','password':'wrong'},headers=headers).status_code,401)
+            r=client.post('/api/auth/signup',json={'first_name':'Sample','last_name':'User','dob':'2000-01-01','email':'new@example.com','password':self.password,'confirm_password':self.password},headers=headers)
+            self.assertEqual(r.status_code,200,r.text)
+            self.assertTrue(r.json()['authenticated'])
+            self.assertEqual(client.get('/api/session').json()['user']['email'],'new@example.com')
+            self.assertFalse(self.store.auth_account('new@example.com')['email_verified'])
+        with TestClient(create_app(self.store,settings),base_url='https://workspace.example') as client:
+            self.assertEqual(client.post('/api/auth/login',json={'email':'fictional@example.com','password':self.password},headers=headers).status_code,403)
+
     def test_google_nonce_verified_identity_and_replay_rejection(self):
         self.config['google_client_id']='fictional.apps.googleusercontent.com'
         nonce=self.post('google/nonce').json()['nonce']
@@ -180,3 +201,4 @@ class AuthTests(unittest.TestCase):
             self.assertNotIn('2000-01-01',stored)
 
 if __name__=='__main__':unittest.main()
+
